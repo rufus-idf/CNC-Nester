@@ -62,8 +62,8 @@ def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
 
 # --- SIDEBAR: SETTINGS ---
 st.sidebar.header("⚙️ Machine Settings")
-SHEET_W = st.sidebar.number_input("Sheet Width (mm)", value=2440.0)
-SHEET_H = st.sidebar.number_input("Sheet Height (mm)", value=1220.0)
+SHEET_W = st.sidebar.number_input("Sheet Width (mm)", value=2800.0)
+SHEET_H = st.sidebar.number_input("Sheet Height (mm)", value=2070.0)
 KERF = st.sidebar.number_input("Kerf / Blade (mm)", value=6.0)
 MARGIN = st.sidebar.number_input("Safety Margin (mm)", value=10.0)
 
@@ -221,3 +221,4 @@ with col2:
                         ax.text(x + w/2, y + h/2, f"{rect.rid}\n{int(w)}x{int(h)}", ha='center', va='center', fontsize=font_s)
                     
                     st.pyplot(fig)
+

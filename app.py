@@ -7,6 +7,7 @@ import csv
 import zipfile
 import ezdxf
 from rectpack import newPacker, PackingMode, MaxRectsBl
+from streamlit_gsheets import GSheetsConnection
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -62,22 +63,97 @@ def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
 
 # --- SIDEBAR: SETTINGS ---
 st.sidebar.header("⚙️ Machine Settings")
-SHEET_W = st.sidebar.number_input("Sheet Width (mm)", value=2800.0)
-SHEET_H = st.sidebar.number_input("Sheet Height (mm)", value=2070.0)
+SHEET_W = st.sidebar.number_input("Sheet Width (mm)", value=2440.0)
+SHEET_H = st.sidebar.number_input("Sheet Height (mm)", value=1220.0)
 KERF = st.sidebar.number_input("Kerf / Blade (mm)", value=6.0)
 MARGIN = st.sidebar.number_input("Safety Margin (mm)", value=10.0)
 
 # --- MAIN PAGE ---
-st.title("🪚 CNC Nester Pro (Product Import Edition)")
+st.title("🪚 CNC Nester Pro (Google Sheets Edition)")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("1. Input Panels")
     
-    tab1, tab2 = st.tabs(["Manual Entry", "Add Product Panels"])
+    # NEW TABS
+    tab1, tab2, tab3 = st.tabs(["☁️ Load from Google Sheet", "Manual Entry", "Paste Data"])
     
+    # --- TAB 1: GOOGLE SHEETS ---
     with tab1:
+        st.info("Connects to your Master Product Sheet")
+        
+        # Load Data Button
+        if st.button("🔄 Refresh Data from Google"):
+            st.cache_data.clear() # Clear cache to get fresh data
+            
+        try:
+            # Connect and Read
+            conn = st.connection("gsheets", type=GSheetsConnection)
+            # We use usecols to only grab what we need, assuming headers match EXACTLY
+            df = conn.read() 
+            
+            # Check if headers exist
+            required_cols = ["Product Name", "Panel Name", "Material", "Length (mm)", "Width (mm)", "Qty Per Unit"]
+            missing = [c for c in required_cols if c not in df.columns]
+            
+            if missing:
+                st.error(f"Missing columns in Sheet: {missing}")
+            else:
+                # 1. Select Product
+                unique_products = df["Product Name"].dropna().unique()
+                selected_product = st.selectbox("Select Product to Build", unique_products)
+                
+                # 2. Select Qty
+                build_qty = st.number_input("How many do you want to build?", min_value=1, value=1)
+                
+                # 3. Filter Material (Optional)
+                unique_mats = df[df["Product Name"] == selected_product]["Material"].unique()
+                selected_mat_filter = st.multiselect("Filter Material (Optional)", unique_mats, default=unique_mats)
+                
+                # 4. Preview
+                subset = df[
+                    (df["Product Name"] == selected_product) & 
+                    (df["Material"].isin(selected_mat_filter))
+                ]
+                st.caption(f"Found {len(subset)} panel types for this product.")
+                st.dataframe(subset[["Panel Name", "Material", "Qty Per Unit", "Length (mm)", "Width (mm)"]], hide_index=True)
+                
+                # 5. Add to Nest
+                if st.button("➕ Add Product to Nest", type="primary"):
+                    count = 0
+                    for index, row in subset.iterrows():
+                        try:
+                            # Extract data
+                            p_name = row["Panel Name"]
+                            p_mat = row["Material"]
+                            p_len = float(row["Length (mm)"])
+                            p_wid = float(row["Width (mm)"])
+                            p_unit_qty = int(row["Qty Per Unit"])
+                            
+                            # Calculate Total
+                            total_qty = p_unit_qty * build_qty
+                            
+                            add_panel(p_wid, p_len, total_qty, p_name, True, p_mat)
+                            count += 1
+                        except Exception as e:
+                            st.error(f"Error on row {index}: {e}")
+                    
+                    if count > 0:
+                        st.success(f"Successfully added {count} panel groups to the Cut List!")
+
+        except Exception as e:
+            st.warning("Could not connect to Google Sheets.")
+            st.markdown("""
+            **How to fix:**
+            1. Create `.streamlit/secrets.toml`
+            2. Add `[connections.gsheets]`
+            3. Add `spreadsheet = "YOUR_LINK"`
+            """)
+            st.error(f"Error details: {e}")
+
+    # --- TAB 2: MANUAL ---
+    with tab2:
         with st.form("add_panel_form"):
             c1, c2 = st.columns(2)
             w = c1.number_input("Width", min_value=1.0, step=10.0)
@@ -91,73 +167,46 @@ with col1:
                 add_panel(w, l, q, label, rot, "Manual")
                 st.success(f"Added {q}x {label}")
 
-    with tab2:
-        st.info("Paste Excel Data (No Headers): **Name | Material | Qty | Length | Width**")
-        
-        # Product Multiplier
-        product_qty = st.number_input("How many Products are you building?", min_value=1, value=1, step=1)
-        
-        # Material Filter (Optional)
-        mat_filter = st.text_input("Filter Material (e.g. 'Oak' or leave empty for all)", value="")
-        
+    # --- TAB 3: PASTE ---
+    with tab3:
+        st.info("Paste Excel Data (No Headers): Name | Material | Qty | Length | Width")
+        product_qty = st.number_input("Multiplier (Products)", min_value=1, value=1)
+        mat_filter = st.text_input("Filter Material", value="")
         paste_data = st.text_area("Paste Data Here")
         
-        if st.button("🚀 Process & Add Panels"):
+        if st.button("🚀 Process Paste"):
             if not paste_data.strip():
-                st.warning("Paste box is empty.")
+                st.warning("Empty.")
             else:
                 try:
-                    # Parse assuming TAB delimiters (Excel default)
-                    # We use csv.reader instead of DictReader since there are no headers
                     f = io.StringIO(paste_data)
                     reader = csv.reader(f, delimiter='\t')
-                    
                     count = 0
-                    skipped = 0
-                    
                     for row in reader:
-                        # Skip empty rows
-                        if not row or len(row) < 5:
-                            continue
-                            
-                        # MAPPING:
-                        # Col 0: Name
-                        # Col 1: Material
-                        # Col 2: Qty
-                        # Col 3: Length
-                        # Col 4: Width
-                        
+                        if not row or len(row) < 5: continue
                         try:
                             name_val = row[0].strip()
                             mat_val = row[1].strip()
                             unit_qty = int(row[2])
-                            l_val = float(row[3]) # Your data had Length in col 3
-                            w_val = float(row[4]) # Your data had Width in col 4
+                            l_val = float(row[3]) 
+                            w_val = float(row[4]) 
                             
-                            # Filter Logic
                             if mat_filter.lower() in mat_val.lower():
                                 total_qty = unit_qty * product_qty
                                 add_panel(w_val, l_val, total_qty, name_val, True, mat_val)
                                 count += 1
-                            else:
-                                skipped += 1
-                                
-                        except ValueError:
-                            # Skip rows that have text instead of numbers in size cols
-                            continue
+                        except ValueError: continue
 
-                    if count > 0:
-                        st.success(f"Imported {count} panels! (Skipped {skipped} due to material filter)")
-                    else:
-                        st.warning("No panels imported. Check your filter or paste format.")
-                        
-                except Exception as e:
-                    st.error(f"Error reading data: {e}")
+                    if count > 0: st.success(f"Imported {count} panels!")
+                except Exception as e: st.error(f"Error: {e}")
 
+    # --- CURRENT LIST ---
     if st.session_state['panels']:
         st.write("---")
         st.subheader("Current Cut List")
-        st.dataframe(pd.DataFrame(st.session_state['panels']), use_container_width=True)
+        # Convert to DF for display
+        df_disp = pd.DataFrame(st.session_state['panels'])
+        st.dataframe(df_disp, use_container_width=True)
         if st.button("🗑️ Clear List"):
             clear_data()
             st.rerun()

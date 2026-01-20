@@ -12,11 +12,17 @@ from streamlit_gsheets import GSheetsConnection
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
 
-# --- SESSION STATE ---
+# --- SESSION STATE INITIALIZATION ---
 if 'panels' not in st.session_state:
     st.session_state['panels'] = []
 
-# --- HELPER FUNCTIONS ---
+# Initialize Sheet Dimension State if not present
+if 'sheet_w' not in st.session_state:
+    st.session_state.sheet_w = 2440.0
+if 'sheet_h' not in st.session_state:
+    st.session_state.sheet_h = 1220.0
+
+# --- LOGIC FUNCTIONS ---
 def add_panel(w, l, q, label, rot, mat):
     st.session_state['panels'].append({
         "Width": w, "Length": l, "Qty": q, "Label": label, "Rot": rot, "Material": mat
@@ -61,91 +67,96 @@ def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
             
     return zip_buffer.getvalue()
 
+# --- CALLBACK FOR PRESETS ---
+def update_sheet_dims():
+    preset = st.session_state.sheet_preset
+    if preset == "MDF (2800 x 2070)":
+        st.session_state.sheet_w = 2800.0
+        st.session_state.sheet_h = 2070.0
+    elif preset == "Ply (3050 x 1220)":
+        st.session_state.sheet_w = 3050.0
+        st.session_state.sheet_h = 1220.0
+    # If Custom, we leave values as they are
+
 # --- SIDEBAR: SETTINGS ---
 st.sidebar.header("⚙️ Machine Settings")
-SHEET_W = st.sidebar.number_input("Sheet Width (mm)", value=2440.0)
-SHEET_H = st.sidebar.number_input("Sheet Height (mm)", value=1220.0)
+
+# 1. Preset Dropdown
+st.sidebar.selectbox(
+    "Select Sheet Size",
+    options=["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"],
+    index=0,
+    key="sheet_preset",
+    on_change=update_sheet_dims
+)
+
+# 2. Dimensions (Linked to session state)
+SHEET_W = st.sidebar.number_input("Sheet Width (mm)", key="sheet_w", step=10.0)
+SHEET_H = st.sidebar.number_input("Sheet Height (mm)", key="sheet_h", step=10.0)
+
+# 3. Other Settings
 KERF = st.sidebar.number_input("Kerf / Blade (mm)", value=6.0)
 MARGIN = st.sidebar.number_input("Safety Margin (mm)", value=10.0)
 
+
 # --- MAIN PAGE ---
-st.title("🪚 CNC Nester Pro (Google Sheets Edition)")
+st.title("🪚 CNC Nester Pro (Google Sheets + Presets)")
 
 col1, col2 = st.columns([1, 2])
 
 with col1:
     st.subheader("1. Input Panels")
     
-    # NEW TABS
     tab1, tab2, tab3 = st.tabs(["☁️ Load from Google Sheet", "Manual Entry", "Paste Data"])
     
     # --- TAB 1: GOOGLE SHEETS ---
     with tab1:
         st.info("Connects to your Master Product Sheet")
-        
-        # Load Data Button
         if st.button("🔄 Refresh Data from Google"):
-            st.cache_data.clear() # Clear cache to get fresh data
+            st.cache_data.clear()
             
         try:
-            # Connect and Read
             conn = st.connection("gsheets", type=GSheetsConnection)
-            # Read the spreadsheet
             df = conn.read()
             
-            # --- UPDATE: Define the exact columns we need to find ---
-            # These must match your Google Sheet headers EXACTLY
             required_cols = ["Product Name", "Panel Name", "Material", "Length (mm)", "Width (mm)", "Qty Per Unit"]
-            
-            # Check for missing columns
             missing = [c for c in required_cols if c not in df.columns]
             
             if missing:
-                st.error(f"Error: The following columns are missing from your Google Sheet: {missing}")
-                st.warning("Please check your spelling. Headers are case-sensitive!")
+                st.error(f"Missing columns: {missing}")
             else:
-                # 1. Select Product
-                # We drop empty rows to avoid blank options
                 unique_products = df["Product Name"].dropna().unique()
                 selected_product = st.selectbox("Select Product to Build", unique_products)
                 
-                # 2. Select Qty
                 build_qty = st.number_input("How many do you want to build?", min_value=1, value=1)
                 
-                # 3. Filter Material
-                # Only show materials relevant to the selected product
                 unique_mats = df[df["Product Name"] == selected_product]["Material"].unique()
                 selected_mat_filter = st.multiselect("Filter Material (Optional)", unique_mats, default=unique_mats)
                 
-                # 4. Preview Data
-                # We filter the dataframe based on user selection
                 subset = df[
                     (df["Product Name"] == selected_product) & 
                     (df["Material"].isin(selected_mat_filter))
                 ]
                 
-                st.caption(f"Found {len(subset)} panel types for this product.")
+                st.caption(f"Found {len(subset)} panel types.")
                 
-                # --- UPDATE: Show SKU in the preview if it exists ---
+                # Show SKU if exists
                 preview_cols = ["Panel Name", "Material", "Qty Per Unit", "Length (mm)", "Width (mm)"]
                 if "Shopify SKU" in df.columns:
                     preview_cols.insert(0, "Shopify SKU")
                     
                 st.dataframe(subset[preview_cols], hide_index=True)
                 
-                # 5. Add to Nest
                 if st.button("➕ Add Product to Nest", type="primary"):
                     count = 0
                     for index, row in subset.iterrows():
                         try:
-                            # Extract data using YOUR specific headers
                             p_name = row["Panel Name"]
                             p_mat = row["Material"]
                             p_len = float(row["Length (mm)"])
                             p_wid = float(row["Width (mm)"])
                             p_unit_qty = int(row["Qty Per Unit"])
                             
-                            # Calculate Total
                             total_qty = p_unit_qty * build_qty
                             
                             add_panel(p_wid, p_len, total_qty, p_name, True, p_mat)
@@ -154,17 +165,11 @@ with col1:
                             st.error(f"Error reading row {index}: {e}")
                     
                     if count > 0:
-                        st.success(f"Successfully added {count} panel groups to the Cut List!")
+                        st.success(f"Added {count} parts to Cut List!")
 
         except Exception as e:
             st.warning("Could not connect to Google Sheets.")
-            st.markdown("""
-            **How to fix:**
-            1. Create `.streamlit/secrets.toml`
-            2. Add `[connections.gsheets]`
-            3. Add `spreadsheet = "YOUR_LINK"`
-            """)
-            st.error(f"Error details: {e}")
+            st.error(f"Error: {e}")
 
     # --- TAB 2: MANUAL ---
     with tab2:
@@ -183,7 +188,7 @@ with col1:
 
     # --- TAB 3: PASTE ---
     with tab3:
-        st.info("Paste Excel Data (No Headers): Name | Material | Qty | Length | Width")
+        st.info("Paste Data (No Headers): Name | Material | Qty | Length | Width")
         product_qty = st.number_input("Multiplier (Products)", min_value=1, value=1)
         mat_filter = st.text_input("Filter Material", value="")
         paste_data = st.text_area("Paste Data Here")
@@ -218,7 +223,6 @@ with col1:
     if st.session_state['panels']:
         st.write("---")
         st.subheader("Current Cut List")
-        # Convert to DF for display
         df_disp = pd.DataFrame(st.session_state['panels'])
         st.dataframe(df_disp, use_container_width=True)
         if st.button("🗑️ Clear List"):

@@ -8,7 +8,6 @@ import zipfile
 import ezdxf
 from rectpack import newPacker, PackingMode, MaxRectsBl, MaxRectsBssf, MaxRectsBaf
 from streamlit_gsheets import GSheetsConnection
-import copy
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -68,25 +67,29 @@ def update_sheet_dims():
         st.session_state.sheet_w = 3050.0
         st.session_state.sheet_h = 1220.0
 
-# --- TWIN-SIMULATION SOLVER ---
+# --- ROBUST SOLVER ENGINE ---
 def solve_packer(panels, sheet_w, sheet_h, margin, kerf, rotate_flexible_panels=False):
     """
-    Runs a single simulation.
-    rotate_flexible_panels: If True, we FLIP the 'No Grain' panels 90 degrees.
+    Runs one specific rotation strategy.
+    Returns: (packer_object, items_packed_count, num_sheets)
     """
     usable_w = sheet_w - (margin * 2)
     usable_h = sheet_h - (margin * 2)
     
-    # We try 3 algorithms for this specific configuration
+    # We test 3 packing algorithms for this strategy
     algos = [MaxRectsBl, MaxRectsBssf, MaxRectsBaf]
     
-    best_local_packer = None
-    min_local_sheets = float('inf')
+    best_algo_packer = None
+    best_algo_items = -1
+    best_algo_sheets = float('inf')
+    
+    # Calculate total expected items for safety loop
+    total_input_items = sum(p['Qty'] for p in panels)
     
     for algo in algos:
-        # STRICT ROTATION FALSE: We control rotation manually before adding
         packer = newPacker(mode=PackingMode.Offline, pack_algo=algo, rotation=False)
         
+        # ADD RECTANGLES
         for p in panels:
             for _ in range(p['Qty']):
                 p_w = p['Width']
@@ -97,52 +100,65 @@ def solve_packer(panels, sheet_w, sheet_h, margin, kerf, rotate_flexible_panels=
                 real_w = p_w + kerf
                 real_l = p_l + kerf
                 
-                # ROTATION LOGIC:
+                # APPLY ROTATION STRATEGY
                 if grain:
-                    # Grain = Yes: MUST respect input dimensions.
+                    # Locked Grain: Must use input dims
                     packer.add_rect(real_w, real_l, rid=rid_label)
                 else:
-                    # Grain = No: We check our Simulation Flag
                     if rotate_flexible_panels:
-                        # Sim B: Rotate them!
+                        # Strategy B: Force Rotate
                         packer.add_rect(real_l, real_w, rid=rid_label)
                     else:
-                        # Sim A: Keep them as is!
+                        # Strategy A: Keep Original
                         packer.add_rect(real_w, real_l, rid=rid_label)
 
-        # Add Bins
-        for _ in range(300):
+        # ADD BINS (Dynamic safety limit)
+        # We add enough bins to cover worst case (1 item per sheet + buffer)
+        safety_bins = max(300, total_input_items + 50)
+        for _ in range(safety_bins):
             packer.add_bin(usable_w, usable_h)
 
         packer.pack()
         
-        # Check if better than other algos in this simulation
-        if len(packer) < min_local_sheets and len(packer.rect_list()) > 0:
-            min_local_sheets = len(packer)
-            best_local_packer = packer
-        elif len(packer) == min_local_sheets and best_local_packer:
-             # Tie breaker: items packed
-             if len(packer.rect_list()) > len(best_local_packer.rect_list()):
-                 best_local_packer = packer
-
-    return best_local_packer
+        # SCORING THE ALGO
+        items_packed = len(packer.rect_list())
+        sheets_used = len(packer)
+        
+        # PRIORITIZE MAX ITEMS, THEN MIN SHEETS
+        if items_packed > best_algo_items:
+            best_algo_packer = packer
+            best_algo_items = items_packed
+            best_algo_sheets = sheets_used
+        elif items_packed == best_algo_items:
+            if sheets_used < best_algo_sheets:
+                best_algo_packer = packer
+                best_algo_sheets = sheets_used
+    
+    return best_algo_packer
 
 def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
-    # SIMULATION A: Keep "No Grain" panels as defined
-    packer_a = solve_packer(panels, sheet_w, sheet_h, margin, kerf, rotate_flexible_panels=False)
-    
-    # SIMULATION B: Flip "No Grain" panels 90 degrees
-    packer_b = solve_packer(panels, sheet_w, sheet_h, margin, kerf, rotate_flexible_panels=True)
-    
-    # COMPARE RESULTS
+    # RUN SIMULATION A (Standard)
+    packer_a = solve_packer(panels, sheet_w, sheet_h, margin, kerf, False)
+    items_a = len(packer_a.rect_list()) if packer_a else 0
     sheets_a = len(packer_a) if packer_a else float('inf')
+
+    # RUN SIMULATION B (Rotated 90)
+    packer_b = solve_packer(panels, sheet_w, sheet_h, margin, kerf, True)
+    items_b = len(packer_b.rect_list()) if packer_b else 0
     sheets_b = len(packer_b) if packer_b else float('inf')
     
-    # Pick the winner
-    if sheets_b < sheets_a:
-        return packer_b # The rotated strategy was better
+    # COMPARE SIMULATIONS
+    # 1. Who packed more items? (The most critical check!)
+    if items_b > items_a:
+        return packer_b
+    elif items_a > items_b:
+        return packer_a
     else:
-        return packer_a # The original strategy was better (or tied)
+        # 2. If tied on items, who used fewer sheets?
+        if sheets_b < sheets_a:
+            return packer_b
+        else:
+            return packer_a
 
 # --- SIDEBAR ---
 st.sidebar.header("⚙️ Machine Settings")
@@ -153,7 +169,7 @@ KERF = st.sidebar.number_input("Kerf", value=6.0)
 MARGIN = st.sidebar.number_input("Margin", value=10.0)
 
 # --- MAIN PAGE ---
-st.title("🪚 CNC Nester Pro (Twin-Sim Solver)")
+st.title("🪚 CNC Nester Pro (Robust)")
 
 col1, col2 = st.columns([1, 2])
 
@@ -227,9 +243,18 @@ with col2:
     if st.button("🚀 RUN SMART NESTING", type="primary"):
         if not st.session_state['panels']: st.warning("Empty.")
         else:
+            # RUN NESTING
             packer = run_smart_nesting(st.session_state['panels'], SHEET_W, SHEET_H, MARGIN, KERF)
             
-            st.success(f"Optimized Result: {len(packer)} Sheets")
+            # CHECK FOR MISSING ITEMS
+            total_input = sum(p['Qty'] for p in st.session_state['panels'])
+            total_packed = len(packer.rect_list()) if packer else 0
+            
+            if total_packed < total_input:
+                missing = total_input - total_packed
+                st.error(f"⚠️ CRITICAL WARNING: {missing} panels could not fit on the sheets! Check your Sheet Size or Panel Dimensions.")
+            else:
+                st.success(f"Success! All {total_packed} panels nested on {len(packer)} Sheets.")
             
             dxf = create_dxf_zip(packer, SHEET_W, SHEET_H, MARGIN, KERF)
             st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary")

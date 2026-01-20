@@ -6,7 +6,7 @@ import io
 import csv
 import zipfile
 import ezdxf
-# FIXED IMPORTS: Only using the standard, existing algorithms
+# Using standard rectpack algorithms
 from rectpack import newPacker, PackingMode, MaxRectsBl, MaxRectsBssf, MaxRectsBaf
 from streamlit_gsheets import GSheetsConnection
 
@@ -77,34 +77,66 @@ def update_sheet_dims():
         st.session_state.sheet_w = 3050.0
         st.session_state.sheet_h = 1220.0
 
-# --- SMART SOLVER FUNCTION ---
+# --- SMART SOLVER (STRICT GRAIN LOGIC) ---
 def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
-    """
-    Tries multiple algorithms and returns the most efficient packer.
-    """
     usable_w = sheet_w - (margin * 2)
     usable_h = sheet_h - (margin * 2)
     
-    # 3 Proven Algorithms to try
-    # Bl = Bottom Left (Standard)
-    # Bssf = Best Short Side Fit (Good for rotating to fit gaps)
-    # Baf = Best Area Fit (Good for density)
+    # We try 3 algorithms, but now in STRICT mode (rotation=False)
     algos = [MaxRectsBl, MaxRectsBssf, MaxRectsBaf]
     
     best_packer = None
     min_sheets = float('inf')
     
-    # Placeholder to track the best packer's efficiency
-    best_waste = float('inf')
-    
     for algo in algos:
-        packer = newPacker(mode=PackingMode.Offline, pack_algo=algo, rotation=True)
+        # CRITICAL CHANGE: rotation=False ensures "Grain=Yes" items NEVER rotate.
+        packer = newPacker(mode=PackingMode.Offline, pack_algo=algo, rotation=False)
         
-        # Add Rectangles
+        # Add Rectangles with SMART PRE-ROTATION
         for p in panels:
-            for _ in range(p['Qty']):
-                rid_label = f"{p['Label']}{'(G)' if p['Grain?'] else ''}"
-                packer.add_rect(p['Width'] + kerf, p['Length'] + kerf, rid=rid_label)
+            p_w = p['Width']
+            p_l = p['Length']
+            grain = p['Grain?']
+            rid_label = f"{p['Label']}{'(G)' if grain else ''}"
+            
+            # Calculate total size including kerf
+            real_w = p_w + kerf
+            real_l = p_l + kerf
+            
+            # LOGIC:
+            if grain:
+                # If Grain is YES, we MUST add it exactly as defined (W, L)
+                packer.add_rect(real_w, real_l, rid=rid_label)
+            else:
+                # If Grain is NO, we manually check which way fits the sheet best
+                # because the global rotation is OFF.
+                
+                # Check orientation 1: W x L
+                fits_1 = (real_w <= usable_w and real_l <= usable_h)
+                
+                # Check orientation 2: L x W
+                fits_2 = (real_l <= usable_w and real_w <= usable_h)
+                
+                if fits_1 and fits_2:
+                    # If BOTH fit, we align the Longest side of the panel 
+                    # with the Longest side of the sheet (Best packing heuristic)
+                    sheet_long = max(usable_w, usable_h)
+                    panel_long = max(real_w, real_l)
+                    
+                    if (real_w == panel_long and usable_w == sheet_long) or \
+                       (real_l == panel_long and usable_h == sheet_long):
+                         # Already aligned well
+                         packer.add_rect(real_w, real_l, rid=rid_label)
+                    else:
+                         # Flip it to align
+                         packer.add_rect(real_l, real_w, rid=rid_label)
+                         
+                elif fits_2:
+                    # If only rotated fits, rotate it
+                    packer.add_rect(real_l, real_w, rid=rid_label)
+                else:
+                    # Default to original (or it won't fit at all)
+                    packer.add_rect(real_w, real_l, rid=rid_label)
 
         # Add Bins
         for _ in range(300):
@@ -114,19 +146,13 @@ def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
         
         num_sheets = len(packer)
         
-        # Calculate Logic:
-        # 1. Fewer sheets is always better
-        # 2. If sheets are equal, check which one packed more items (safety)
-        # 3. If items equal, check area used (tighter pack)
-        
+        # Determine Winner
         if num_sheets < min_sheets and len(packer.rect_list()) > 0:
             min_sheets = num_sheets
             best_packer = packer
         elif num_sheets == min_sheets and best_packer:
-            # Tie-breaker: Compare total items packed (just in case one failed)
             if len(packer.rect_list()) > len(best_packer.rect_list()):
                  best_packer = packer
-            # Secondary tie-breaker: Could implement area check, but usually unnecessary for this level
     
     return best_packer
 
@@ -139,7 +165,7 @@ KERF = st.sidebar.number_input("Kerf", value=6.0)
 MARGIN = st.sidebar.number_input("Margin", value=10.0)
 
 # --- MAIN PAGE ---
-st.title("🪚 CNC Nester Pro (Smart Solver)")
+st.title("🪚 CNC Nester Pro (Strict Grain)")
 
 col1, col2 = st.columns([1, 2])
 
@@ -170,6 +196,7 @@ with col1:
                 if st.button("➕ Add Product"):
                     c=0
                     for i,r in subset.iterrows():
+                        # Default Grain? = NO (User can change in list)
                         add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"])*qty, r["Panel Name"], False, r["Material"])
                         c+=1
                     if c: st.success(f"Added {c} items")
@@ -182,7 +209,7 @@ with col1:
             c1,c2 = st.columns(2)
             w=c1.number_input("W", step=10.0); l=c2.number_input("L", step=10.0)
             c3,c4 = st.columns(2)
-            q=c3.number_input("Qty", 1, 100, 1); g=c4.checkbox("Grain?")
+            q=c3.number_input("Qty", 1, 100, 1); g=c4.checkbox("Grain? (Fixed)")
             lbl=st.text_input("Label", "Part")
             if st.form_submit_button("Add"):
                 add_panel(w,l,q,lbl,g,"Manual")

@@ -94,49 +94,51 @@ def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
         
         # Add Rectangles with SMART PRE-ROTATION
         for p in panels:
-            p_w = p['Width']
-            p_l = p['Length']
-            grain = p['Grain?']
-            rid_label = f"{p['Label']}{'(G)' if grain else ''}"
-            
-            # Calculate total size including kerf
-            real_w = p_w + kerf
-            real_l = p_l + kerf
-            
-            # LOGIC:
-            if grain:
-                # If Grain is YES, we MUST add it exactly as defined (W, L)
-                packer.add_rect(real_w, real_l, rid=rid_label)
-            else:
-                # If Grain is NO, we manually check which way fits the sheet best
-                # because the global rotation is OFF.
+            # === FIXED: Added Quantity Loop Here ===
+            for _ in range(p['Qty']):
+                p_w = p['Width']
+                p_l = p['Length']
+                grain = p['Grain?']
+                rid_label = f"{p['Label']}{'(G)' if grain else ''}"
                 
-                # Check orientation 1: W x L
-                fits_1 = (real_w <= usable_w and real_l <= usable_h)
+                # Calculate total size including kerf
+                real_w = p_w + kerf
+                real_l = p_l + kerf
                 
-                # Check orientation 2: L x W
-                fits_2 = (real_l <= usable_w and real_w <= usable_h)
-                
-                if fits_1 and fits_2:
-                    # If BOTH fit, we align the Longest side of the panel 
-                    # with the Longest side of the sheet (Best packing heuristic)
-                    sheet_long = max(usable_w, usable_h)
-                    panel_long = max(real_w, real_l)
-                    
-                    if (real_w == panel_long and usable_w == sheet_long) or \
-                       (real_l == panel_long and usable_h == sheet_long):
-                         # Already aligned well
-                         packer.add_rect(real_w, real_l, rid=rid_label)
-                    else:
-                         # Flip it to align
-                         packer.add_rect(real_l, real_w, rid=rid_label)
-                         
-                elif fits_2:
-                    # If only rotated fits, rotate it
-                    packer.add_rect(real_l, real_w, rid=rid_label)
-                else:
-                    # Default to original (or it won't fit at all)
+                # LOGIC:
+                if grain:
+                    # If Grain is YES, we MUST add it exactly as defined (W, L)
                     packer.add_rect(real_w, real_l, rid=rid_label)
+                else:
+                    # If Grain is NO, we manually check which way fits the sheet best
+                    # because the global rotation is OFF.
+                    
+                    # Check orientation 1: W x L
+                    fits_1 = (real_w <= usable_w and real_l <= usable_h)
+                    
+                    # Check orientation 2: L x W
+                    fits_2 = (real_l <= usable_w and real_w <= usable_h)
+                    
+                    if fits_1 and fits_2:
+                        # If BOTH fit, we align the Longest side of the panel 
+                        # with the Longest side of the sheet (Best packing heuristic)
+                        sheet_long = max(usable_w, usable_h)
+                        panel_long = max(real_w, real_l)
+                        
+                        if (real_w == panel_long and usable_w == sheet_long) or \
+                           (real_l == panel_long and usable_h == sheet_long):
+                             # Already aligned well
+                             packer.add_rect(real_w, real_l, rid=rid_label)
+                        else:
+                             # Flip it to align
+                             packer.add_rect(real_l, real_w, rid=rid_label)
+                             
+                    elif fits_2:
+                        # If only rotated fits, rotate it
+                        packer.add_rect(real_l, real_w, rid=rid_label)
+                    else:
+                        # Default to original (or it won't fit at all)
+                        packer.add_rect(real_w, real_l, rid=rid_label)
 
         # Add Bins
         for _ in range(300):
@@ -165,7 +167,7 @@ KERF = st.sidebar.number_input("Kerf", value=6.0)
 MARGIN = st.sidebar.number_input("Margin", value=10.0)
 
 # --- MAIN PAGE ---
-st.title("🪚 CNC Nester Pro (Strict Grain)")
+st.title("🪚 CNC Nester Pro (Strict Grain + Fixed Qty)")
 
 col1, col2 = st.columns([1, 2])
 
@@ -265,3 +267,4 @@ with col2:
                         ax.add_patch(patches.Rectangle((x,y), w, h, fc=fc, ec='#222'))
                         ax.text(x+w/2, y+h/2, f"{r.rid}\n{int(w)}x{int(h)}", ha='center', va='center', fontsize=8 if w>100 else 6, color='white' if fc=='#8b4513' else 'black')
                     st.pyplot(fig)
+

@@ -6,9 +6,9 @@ import io
 import csv
 import zipfile
 import ezdxf
-# Using standard rectpack algorithms
 from rectpack import newPacker, PackingMode, MaxRectsBl, MaxRectsBssf, MaxRectsBaf
 from streamlit_gsheets import GSheetsConnection
+import copy
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -37,35 +37,26 @@ def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
         for i, bin in enumerate(packer):
             doc = ezdxf.new()
             msp = doc.modelspace()
-            
-            # Layers
             doc.layers.new(name='SHEET_BOUNDARY', dxfattribs={'color': 1})
             doc.layers.new(name='CUT_LINES', dxfattribs={'color': 3})
             doc.layers.new(name='LABELS', dxfattribs={'color': 7})
             
-            # Draw Sheet Boundary
             msp.add_lwpolyline([(0, 0), (sheet_w, 0), (sheet_w, sheet_h), (0, sheet_h), (0, 0)], dxfattribs={'layer': 'SHEET_BOUNDARY'})
             
-            # Draw Panels
             for rect in bin:
                 x = rect.x + margin
                 y = rect.y + margin
                 w = rect.width - kerf
                 h = rect.height - kerf
-                
                 points = [(x, y), (x+w, y), (x+w, y+h), (x, y+h), (x, y)]
                 msp.add_lwpolyline(points, dxfattribs={'layer': 'CUT_LINES'})
-                
-                # Label
                 label_text = str(rect.rid) if rect.rid else "Part"
                 msp.add_text(label_text, dxfattribs={'layer': 'LABELS', 'height': 20}).set_placement((x + w/2, y + h/2), align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER)
                 size_text = f"{int(w)}x{int(h)}"
                 msp.add_text(size_text, dxfattribs={'layer': 'LABELS', 'height': 15}).set_placement((x + w/2, y + h/2 - 25), align=ezdxf.enums.TextEntityAlignment.MIDDLE_CENTER)
-
             dxf_io = io.StringIO()
             doc.write(dxf_io)
             zip_file.writestr(f"Sheet_{i+1}.dxf", dxf_io.getvalue())
-            
     return zip_buffer.getvalue()
 
 def update_sheet_dims():
@@ -77,67 +68,46 @@ def update_sheet_dims():
         st.session_state.sheet_w = 3050.0
         st.session_state.sheet_h = 1220.0
 
-# --- SMART SOLVER (STRICT GRAIN LOGIC) ---
-def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
+# --- TWIN-SIMULATION SOLVER ---
+def solve_packer(panels, sheet_w, sheet_h, margin, kerf, rotate_flexible_panels=False):
+    """
+    Runs a single simulation.
+    rotate_flexible_panels: If True, we FLIP the 'No Grain' panels 90 degrees.
+    """
     usable_w = sheet_w - (margin * 2)
     usable_h = sheet_h - (margin * 2)
     
-    # We try 3 algorithms, but now in STRICT mode (rotation=False)
+    # We try 3 algorithms for this specific configuration
     algos = [MaxRectsBl, MaxRectsBssf, MaxRectsBaf]
     
-    best_packer = None
-    min_sheets = float('inf')
+    best_local_packer = None
+    min_local_sheets = float('inf')
     
     for algo in algos:
-        # CRITICAL CHANGE: rotation=False ensures "Grain=Yes" items NEVER rotate.
+        # STRICT ROTATION FALSE: We control rotation manually before adding
         packer = newPacker(mode=PackingMode.Offline, pack_algo=algo, rotation=False)
         
-        # Add Rectangles with SMART PRE-ROTATION
         for p in panels:
-            # === FIXED: Added Quantity Loop Here ===
             for _ in range(p['Qty']):
                 p_w = p['Width']
                 p_l = p['Length']
                 grain = p['Grain?']
                 rid_label = f"{p['Label']}{'(G)' if grain else ''}"
                 
-                # Calculate total size including kerf
                 real_w = p_w + kerf
                 real_l = p_l + kerf
                 
-                # LOGIC:
+                # ROTATION LOGIC:
                 if grain:
-                    # If Grain is YES, we MUST add it exactly as defined (W, L)
+                    # Grain = Yes: MUST respect input dimensions.
                     packer.add_rect(real_w, real_l, rid=rid_label)
                 else:
-                    # If Grain is NO, we manually check which way fits the sheet best
-                    # because the global rotation is OFF.
-                    
-                    # Check orientation 1: W x L
-                    fits_1 = (real_w <= usable_w and real_l <= usable_h)
-                    
-                    # Check orientation 2: L x W
-                    fits_2 = (real_l <= usable_w and real_w <= usable_h)
-                    
-                    if fits_1 and fits_2:
-                        # If BOTH fit, we align the Longest side of the panel 
-                        # with the Longest side of the sheet (Best packing heuristic)
-                        sheet_long = max(usable_w, usable_h)
-                        panel_long = max(real_w, real_l)
-                        
-                        if (real_w == panel_long and usable_w == sheet_long) or \
-                           (real_l == panel_long and usable_h == sheet_long):
-                             # Already aligned well
-                             packer.add_rect(real_w, real_l, rid=rid_label)
-                        else:
-                             # Flip it to align
-                             packer.add_rect(real_l, real_w, rid=rid_label)
-                             
-                    elif fits_2:
-                        # If only rotated fits, rotate it
+                    # Grain = No: We check our Simulation Flag
+                    if rotate_flexible_panels:
+                        # Sim B: Rotate them!
                         packer.add_rect(real_l, real_w, rid=rid_label)
                     else:
-                        # Default to original (or it won't fit at all)
+                        # Sim A: Keep them as is!
                         packer.add_rect(real_w, real_l, rid=rid_label)
 
         # Add Bins
@@ -146,17 +116,33 @@ def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
 
         packer.pack()
         
-        num_sheets = len(packer)
-        
-        # Determine Winner
-        if num_sheets < min_sheets and len(packer.rect_list()) > 0:
-            min_sheets = num_sheets
-            best_packer = packer
-        elif num_sheets == min_sheets and best_packer:
-            if len(packer.rect_list()) > len(best_packer.rect_list()):
-                 best_packer = packer
+        # Check if better than other algos in this simulation
+        if len(packer) < min_local_sheets and len(packer.rect_list()) > 0:
+            min_local_sheets = len(packer)
+            best_local_packer = packer
+        elif len(packer) == min_local_sheets and best_local_packer:
+             # Tie breaker: items packed
+             if len(packer.rect_list()) > len(best_local_packer.rect_list()):
+                 best_local_packer = packer
+
+    return best_local_packer
+
+def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
+    # SIMULATION A: Keep "No Grain" panels as defined
+    packer_a = solve_packer(panels, sheet_w, sheet_h, margin, kerf, rotate_flexible_panels=False)
     
-    return best_packer
+    # SIMULATION B: Flip "No Grain" panels 90 degrees
+    packer_b = solve_packer(panels, sheet_w, sheet_h, margin, kerf, rotate_flexible_panels=True)
+    
+    # COMPARE RESULTS
+    sheets_a = len(packer_a) if packer_a else float('inf')
+    sheets_b = len(packer_b) if packer_b else float('inf')
+    
+    # Pick the winner
+    if sheets_b < sheets_a:
+        return packer_b # The rotated strategy was better
+    else:
+        return packer_a # The original strategy was better (or tied)
 
 # --- SIDEBAR ---
 st.sidebar.header("⚙️ Machine Settings")
@@ -167,7 +153,7 @@ KERF = st.sidebar.number_input("Kerf", value=6.0)
 MARGIN = st.sidebar.number_input("Margin", value=10.0)
 
 # --- MAIN PAGE ---
-st.title("🪚 CNC Nester Pro (Strict Grain + Fixed Qty)")
+st.title("🪚 CNC Nester Pro (Twin-Sim Solver)")
 
 col1, col2 = st.columns([1, 2])
 
@@ -175,7 +161,6 @@ with col1:
     st.subheader("1. Input")
     tab1, tab2, tab3 = st.tabs(["☁️ G-Sheets", "Manual", "Paste"])
     
-    # GSheets
     with tab1:
         if st.button("🔄 Refresh"): st.cache_data.clear()
         try:
@@ -198,14 +183,12 @@ with col1:
                 if st.button("➕ Add Product"):
                     c=0
                     for i,r in subset.iterrows():
-                        # Default Grain? = NO (User can change in list)
                         add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"])*qty, r["Panel Name"], False, r["Material"])
                         c+=1
                     if c: st.success(f"Added {c} items")
             else: st.error(f"Missing headers. Needed: {cols}")
         except Exception as e: st.warning(f"Connection error: {e}")
 
-    # Manual
     with tab2:
         with st.form("man"):
             c1,c2 = st.columns(2)
@@ -217,7 +200,6 @@ with col1:
                 add_panel(w,l,q,lbl,g,"Manual")
                 st.success("Added")
 
-    # Paste
     with tab3:
         pq = st.number_input("Prod Multi", 1); mf = st.text_input("Mat Filter")
         txt = st.text_area("Paste (Name|Mat|Qty|Len|Wid)")
@@ -232,7 +214,6 @@ with col1:
                 st.success(f"Added {c}")
             except: st.error("Error")
 
-    # List
     if st.session_state['panels']:
         st.write("---")
         df_ed = pd.DataFrame(st.session_state['panels'])
@@ -267,4 +248,3 @@ with col2:
                         ax.add_patch(patches.Rectangle((x,y), w, h, fc=fc, ec='#222'))
                         ax.text(x+w/2, y+h/2, f"{r.rid}\n{int(w)}x{int(h)}", ha='center', va='center', fontsize=8 if w>100 else 6, color='white' if fc=='#8b4513' else 'black')
                     st.pyplot(fig)
-

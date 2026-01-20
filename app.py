@@ -90,41 +90,55 @@ with col1:
         try:
             # Connect and Read
             conn = st.connection("gsheets", type=GSheetsConnection)
-            # We use usecols to only grab what we need, assuming headers match EXACTLY
-            df = conn.read() 
+            # Read the spreadsheet
+            df = conn.read()
             
-            # Check if headers exist
+            # --- UPDATE: Define the exact columns we need to find ---
+            # These must match your Google Sheet headers EXACTLY
             required_cols = ["Product Name", "Panel Name", "Material", "Length (mm)", "Width (mm)", "Qty Per Unit"]
+            
+            # Check for missing columns
             missing = [c for c in required_cols if c not in df.columns]
             
             if missing:
-                st.error(f"Missing columns in Sheet: {missing}")
+                st.error(f"Error: The following columns are missing from your Google Sheet: {missing}")
+                st.warning("Please check your spelling. Headers are case-sensitive!")
             else:
                 # 1. Select Product
+                # We drop empty rows to avoid blank options
                 unique_products = df["Product Name"].dropna().unique()
                 selected_product = st.selectbox("Select Product to Build", unique_products)
                 
                 # 2. Select Qty
                 build_qty = st.number_input("How many do you want to build?", min_value=1, value=1)
                 
-                # 3. Filter Material (Optional)
+                # 3. Filter Material
+                # Only show materials relevant to the selected product
                 unique_mats = df[df["Product Name"] == selected_product]["Material"].unique()
                 selected_mat_filter = st.multiselect("Filter Material (Optional)", unique_mats, default=unique_mats)
                 
-                # 4. Preview
+                # 4. Preview Data
+                # We filter the dataframe based on user selection
                 subset = df[
                     (df["Product Name"] == selected_product) & 
                     (df["Material"].isin(selected_mat_filter))
                 ]
+                
                 st.caption(f"Found {len(subset)} panel types for this product.")
-                st.dataframe(subset[["Panel Name", "Material", "Qty Per Unit", "Length (mm)", "Width (mm)"]], hide_index=True)
+                
+                # --- UPDATE: Show SKU in the preview if it exists ---
+                preview_cols = ["Panel Name", "Material", "Qty Per Unit", "Length (mm)", "Width (mm)"]
+                if "Shopify SKU" in df.columns:
+                    preview_cols.insert(0, "Shopify SKU")
+                    
+                st.dataframe(subset[preview_cols], hide_index=True)
                 
                 # 5. Add to Nest
                 if st.button("➕ Add Product to Nest", type="primary"):
                     count = 0
                     for index, row in subset.iterrows():
                         try:
-                            # Extract data
+                            # Extract data using YOUR specific headers
                             p_name = row["Panel Name"]
                             p_mat = row["Material"]
                             p_len = float(row["Length (mm)"])
@@ -137,7 +151,7 @@ with col1:
                             add_panel(p_wid, p_len, total_qty, p_name, True, p_mat)
                             count += 1
                         except Exception as e:
-                            st.error(f"Error on row {index}: {e}")
+                            st.error(f"Error reading row {index}: {e}")
                     
                     if count > 0:
                         st.success(f"Successfully added {count} panel groups to the Cut List!")
@@ -270,4 +284,3 @@ with col2:
                         ax.text(x + w/2, y + h/2, f"{rect.rid}\n{int(w)}x{int(h)}", ha='center', va='center', fontsize=font_s)
                     
                     st.pyplot(fig)
-

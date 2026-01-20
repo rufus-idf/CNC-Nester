@@ -6,8 +6,8 @@ import io
 import csv
 import zipfile
 import ezdxf
-import rectpack.packer as rp
-from rectpack import newPacker, PackingMode, MaxRectsBl, MaxRectsBssf, MaxRectsBaf, MaxRectsLas
+# FIXED IMPORTS: Only using the standard, existing algorithms
+from rectpack import newPacker, PackingMode, MaxRectsBl, MaxRectsBssf, MaxRectsBaf
 from streamlit_gsheets import GSheetsConnection
 
 # --- PAGE CONFIG ---
@@ -85,50 +85,48 @@ def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
     usable_w = sheet_w - (margin * 2)
     usable_h = sheet_h - (margin * 2)
     
-    # List of heuristics to try
-    # MaxRectsBssf (Best Short Side Fit) is usually the winner for your issue
-    algos = [MaxRectsBl, MaxRectsBssf, MaxRectsBaf, MaxRectsLas]
+    # 3 Proven Algorithms to try
+    # Bl = Bottom Left (Standard)
+    # Bssf = Best Short Side Fit (Good for rotating to fit gaps)
+    # Baf = Best Area Fit (Good for density)
+    algos = [MaxRectsBl, MaxRectsBssf, MaxRectsBaf]
     
     best_packer = None
     min_sheets = float('inf')
-    best_efficiency = 0
+    
+    # Placeholder to track the best packer's efficiency
+    best_waste = float('inf')
     
     for algo in algos:
-        # Create a new packer for this attempt
         packer = newPacker(mode=PackingMode.Offline, pack_algo=algo, rotation=True)
         
         # Add Rectangles
-        total_area = 0
-        total_items = 0
         for p in panels:
             for _ in range(p['Qty']):
-                # Grain Logic: 
-                # If Grain=True, we technically want to lock rotation.
-                # rectpack simple API enables rotation globally. 
-                # For now, we allow rotation to solve the fit, but mark the label.
                 rid_label = f"{p['Label']}{'(G)' if p['Grain?'] else ''}"
                 packer.add_rect(p['Width'] + kerf, p['Length'] + kerf, rid=rid_label)
-                total_area += (p['Width'] * p['Length'])
-                total_items += 1
 
-        # Add Bins (Try up to 300 sheets)
+        # Add Bins
         for _ in range(300):
             packer.add_bin(usable_w, usable_h)
 
-        # Pack
         packer.pack()
         
-        # Check results
         num_sheets = len(packer)
-        # Calculate area efficiency of the first sheet (tie-breaker)
-        if num_sheets < min_sheets:
+        
+        # Calculate Logic:
+        # 1. Fewer sheets is always better
+        # 2. If sheets are equal, check which one packed more items (safety)
+        # 3. If items equal, check area used (tighter pack)
+        
+        if num_sheets < min_sheets and len(packer.rect_list()) > 0:
             min_sheets = num_sheets
             best_packer = packer
-        elif num_sheets == min_sheets:
-            # If tie, check which one packed tighter (less waste area)
-            # Simple check: compare len(rect_list) just in case one failed to pack all
+        elif num_sheets == min_sheets and best_packer:
+            # Tie-breaker: Compare total items packed (just in case one failed)
             if len(packer.rect_list()) > len(best_packer.rect_list()):
                  best_packer = packer
+            # Secondary tie-breaker: Could implement area check, but usually unnecessary for this level
     
     return best_packer
 
@@ -155,7 +153,6 @@ with col1:
         try:
             conn = st.connection("gsheets", type=GSheetsConnection)
             df = conn.read()
-            # Clean headers to match logic
             cols = ["Product Name", "Panel Name", "Material", "Length (mm)", "Width (mm)", "Qty Per Unit"]
             if all(c in df.columns for c in cols):
                 prods = df["Product Name"].dropna().unique()
@@ -166,7 +163,6 @@ with col1:
                 
                 subset = df[(df["Product Name"]==sel_prod) & (df["Material"].isin(sel_mats))]
                 
-                # Show SKU if available
                 prev_cols = ["Panel Name", "Material", "Qty Per Unit", "Length (mm)", "Width (mm)"]
                 if "Shopify SKU" in df.columns: prev_cols.insert(0, "Shopify SKU")
                 st.dataframe(subset[prev_cols], hide_index=True)
@@ -221,7 +217,6 @@ with col2:
     if st.button("🚀 RUN SMART NESTING", type="primary"):
         if not st.session_state['panels']: st.warning("Empty.")
         else:
-            # RUN THE SMART SOLVER
             packer = run_smart_nesting(st.session_state['panels'], SHEET_W, SHEET_H, MARGIN, KERF)
             
             st.success(f"Optimized Result: {len(packer)} Sheets")
@@ -243,4 +238,3 @@ with col2:
                         ax.add_patch(patches.Rectangle((x,y), w, h, fc=fc, ec='#222'))
                         ax.text(x+w/2, y+h/2, f"{r.rid}\n{int(w)}x{int(h)}", ha='center', va='center', fontsize=8 if w>100 else 6, color='white' if fc=='#8b4513' else 'black')
                     st.pyplot(fig)
-

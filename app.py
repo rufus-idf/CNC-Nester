@@ -19,6 +19,8 @@ if 'sheet_w' not in st.session_state:
     st.session_state.sheet_w = 2440.0
 if 'sheet_h' not in st.session_state:
     st.session_state.sheet_h = 1220.0
+if 'panels_editor' not in st.session_state:
+    st.session_state['panels_editor'] = []
 
 # --- HELPERS ---
 def add_panel(w, l, q, label, grain, mat):
@@ -29,6 +31,15 @@ def add_panel(w, l, q, label, grain, mat):
 
 def clear_data():
     st.session_state['panels'] = []
+    st.session_state['panels_editor'] = []
+
+def normalize_panels(panels):
+    normalized = []
+    for p in panels:
+        row = dict(p)
+        row["Grain?"] = bool(row.get("Grain?", False))
+        normalized.append(row)
+    return normalized
 
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
     zip_buffer = io.BytesIO()
@@ -232,10 +243,12 @@ with col1:
 
     if st.session_state['panels']:
         st.write("---")
+        st.session_state['panels'] = normalize_panels(st.session_state['panels'])
         df_ed = pd.DataFrame(st.session_state['panels'])
         edited = st.data_editor(df_ed, use_container_width=True, num_rows="dynamic", hide_index=True,
-                                column_config={"Grain?": st.column_config.CheckboxColumn("Grain?", default=False)})
-        st.session_state['panels'] = edited.to_dict('records')
+                                column_config={"Grain?": st.column_config.CheckboxColumn("Grain?", default=False)},
+                                key="panels_editor")
+        st.session_state['panels'] = normalize_panels(edited.to_dict('records'))
         if st.button("🗑️ Clear"): clear_data(); st.rerun()
 
 with col2:

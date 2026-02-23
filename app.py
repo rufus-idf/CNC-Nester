@@ -19,8 +19,6 @@ if 'sheet_w' not in st.session_state:
     st.session_state.sheet_w = 2440.0
 if 'sheet_h' not in st.session_state:
     st.session_state.sheet_h = 1220.0
-if 'panels_editor' not in st.session_state:
-    st.session_state['panels_editor'] = []
 
 # --- HELPERS ---
 def add_panel(w, l, q, label, grain, mat):
@@ -31,7 +29,8 @@ def add_panel(w, l, q, label, grain, mat):
 
 def clear_data():
     st.session_state['panels'] = []
-    st.session_state['panels_editor'] = []
+    if 'panels_editor' in st.session_state:
+        del st.session_state['panels_editor']
 
 def normalize_panels(panels):
     normalized = []
@@ -244,8 +243,11 @@ with col1:
     if st.session_state['panels']:
         st.write("---")
         st.session_state['panels'] = normalize_panels(st.session_state['panels'])
+        # Recover from invalid persisted widget state (e.g. list from older app versions)
+        if 'panels_editor' in st.session_state and not isinstance(st.session_state['panels_editor'], dict):
+            del st.session_state['panels_editor']
         df_ed = pd.DataFrame(st.session_state['panels'])
-        edited = st.data_editor(df_ed, use_container_width=True, num_rows="dynamic", hide_index=True,
+        edited = st.data_editor(df_ed, width="stretch", num_rows="dynamic", hide_index=True,
                                 column_config={"Grain?": st.column_config.CheckboxColumn("Grain?", default=False)},
                                 key="panels_editor")
         st.session_state['panels'] = normalize_panels(edited.to_dict('records'))

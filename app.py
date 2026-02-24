@@ -5,12 +5,11 @@ import matplotlib.patches as patches
 import io
 import csv
 import zipfile
-import json
 import ezdxf
 from streamlit_gsheets import GSheetsConnection
 from nesting_engine import run_smart_nesting
 from panel_utils import normalize_panels
-from nest_storage import build_nest_payload, parse_nest_payload, payload_to_json
+from nest_storage import build_nest_payload, parse_nest_payload, payload_to_dxf, dxf_to_payload
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
 
 # --- PAGE CONFIG ---
@@ -169,16 +168,16 @@ with col1:
     save_payload = build_nest_payload(nest_name, SHEET_W, SHEET_H, MARGIN, KERF, st.session_state['panels'])
     st.download_button(
         "💾 Save Nest",
-        data=payload_to_json(save_payload),
-        file_name=f"{nest_name.strip().replace(' ', '_') or 'nest'}.json",
-        mime="application/json",
+        data=payload_to_dxf(save_payload),
+        file_name=f"{nest_name.strip().replace(' ', '_') or 'nest'}.dxf",
+        mime="application/dxf",
         type="secondary",
     )
 
-    uploaded_nest = st.file_uploader("📂 Load Nest", type=["json"], accept_multiple_files=False)
+    uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf"], accept_multiple_files=False)
     if uploaded_nest is not None:
         try:
-            payload = json.loads(uploaded_nest.read().decode("utf-8"))
+            payload = dxf_to_payload(uploaded_nest.read())
             loaded = parse_nest_payload(payload)
             st.session_state.sheet_w = loaded["sheet_w"]
             st.session_state.sheet_h = loaded["sheet_h"]

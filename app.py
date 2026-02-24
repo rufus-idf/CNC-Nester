@@ -41,6 +41,8 @@ if 'last_packer' not in st.session_state:
     st.session_state.last_packer = None
 if 'manual_selected_part_id' not in st.session_state:
     st.session_state.manual_selected_part_id = None
+if 'manual_part_select' not in st.session_state:
+    st.session_state.manual_part_select = None
 
 
 def apply_pending_loaded_nest():
@@ -249,6 +251,7 @@ def manual_tuning_dialog():
     if not layout or not layout.get("sheets"):
         st.session_state.show_manual_tuning = False
         st.session_state.manual_layout_draft = None
+        st.session_state.manual_part_select = None
         return
 
     sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in layout["sheets"]]
@@ -265,7 +268,11 @@ def manual_tuning_dialog():
     clicked_part_id = draw_interactive_layout(layout, selected_sheet_idx, st.session_state.manual_selected_part_id)
     if clicked_part_id in part_ids and clicked_part_id != st.session_state.manual_selected_part_id:
         st.session_state.manual_selected_part_id = clicked_part_id
+        st.session_state.manual_part_select = clicked_part_id
         st.rerun()
+
+    if st.session_state.get("manual_part_select") not in part_ids:
+        st.session_state.manual_part_select = st.session_state.manual_selected_part_id
 
     selected_part_id = st.selectbox(
         "Part to move/rotate",
@@ -309,11 +316,13 @@ def manual_tuning_dialog():
     if d1.button("Apply to Nest", type="primary"):
         st.session_state.manual_layout = copy.deepcopy(st.session_state.manual_layout_draft)
         st.session_state.show_manual_tuning = False
+        st.session_state.manual_part_select = None
         st.success("Manual tuning applied to current nest.")
         st.rerun()
     if d2.button("Cancel"):
         st.session_state.show_manual_tuning = False
         st.session_state.manual_layout_draft = None
+        st.session_state.manual_part_select = None
         st.rerun()
 
 
@@ -545,6 +554,7 @@ with col2:
                     st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
                     first_sheet_parts = st.session_state.manual_layout_draft["sheets"][0]["parts"]
                     st.session_state.manual_selected_part_id = first_sheet_parts[0]["id"] if first_sheet_parts else None
+                    st.session_state.manual_part_select = st.session_state.manual_selected_part_id
                     st.session_state.show_manual_tuning = True
                     st.rerun()
         with action_col2:

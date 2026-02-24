@@ -19,10 +19,60 @@ def coerce_bool(value):
     return False
 
 
+def _coerce_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value, default=1):
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def normalize_panels(panels):
     normalized = []
     for p in panels:
         row = dict(p)
+        row["Label"] = str(row.get("Label", "Part"))
+        row["Width"] = _coerce_float(row.get("Width", 0.0), default=0.0)
+        row["Length"] = _coerce_float(row.get("Length", 0.0), default=0.0)
+        row["Qty"] = max(1, _coerce_int(row.get("Qty", 1), default=1))
         row["Grain?"] = coerce_bool(row.get("Grain?", False))
-        normalized.append(row)
+        row["Material"] = str(row.get("Material", "Manual"))
+        normalized.append({
+            "Label": row["Label"],
+            "Width": row["Width"],
+            "Length": row["Length"],
+            "Qty": row["Qty"],
+            "Grain?": row["Grain?"],
+            "Material": row["Material"],
+        })
     return normalized
+
+
+def panels_to_editor_rows(panels):
+    rows = []
+    for panel in normalize_panels(panels):
+        row = dict(panel)
+        row["Swap L↔W"] = False
+        rows.append(row)
+    return rows
+
+
+def apply_editor_rows(edited_rows):
+    rows = []
+    for raw in edited_rows:
+        row = dict(raw)
+        if coerce_bool(row.get("Swap L↔W", False)):
+            width = row.get("Width", 0.0)
+            row["Width"] = row.get("Length", 0.0)
+            row["Length"] = width
+        row["Swap L↔W"] = False
+        rows.append(row)
+
+    normalized_panels = normalize_panels(rows)
+    return normalized_panels, panels_to_editor_rows(normalized_panels)

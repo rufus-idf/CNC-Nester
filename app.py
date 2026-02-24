@@ -8,7 +8,7 @@ import zipfile
 import ezdxf
 from streamlit_gsheets import GSheetsConnection
 from nesting_engine import run_smart_nesting
-from panel_utils import normalize_panels
+from panel_utils import normalize_panels, panels_to_editor_rows, apply_editor_rows
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -46,7 +46,7 @@ def mark_panels_table_dirty():
 
 def sync_panels_table_from_list(force=False):
     if force or st.session_state.get("panels_table_dirty", True) or ("panels_table" not in st.session_state):
-        st.session_state["panels_table"] = pd.DataFrame(normalize_panels(st.session_state["panels"]))
+        st.session_state["panels_table"] = pd.DataFrame(panels_to_editor_rows(st.session_state["panels"]))
         st.session_state["panels_table_dirty"] = False
 
 
@@ -168,12 +168,16 @@ with col1:
             width="stretch",
             num_rows="dynamic",
             hide_index=True,
-            column_config={"Grain?": st.column_config.CheckboxColumn("Grain?", default=False)},
+            column_config={
+                "Grain?": st.column_config.CheckboxColumn("Grain?", default=False),
+                "Swap L↔W": st.column_config.CheckboxColumn("Swap L↔W", default=False, help="Tick this row to swap Length and Width."),
+            },
             key="panels_editor"
         )
 
-        st.session_state["panels_table"] = edited
-        st.session_state['panels'] = normalize_panels(edited.to_dict('records'))
+        normalized_panels, normalized_editor_rows = apply_editor_rows(edited.to_dict("records"))
+        st.session_state["panels_table"] = pd.DataFrame(normalized_editor_rows)
+        st.session_state["panels"] = normalized_panels
 
         if st.button("🗑️ Clear"):
             clear_data()

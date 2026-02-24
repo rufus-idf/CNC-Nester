@@ -1,6 +1,6 @@
 import unittest
 
-from panel_utils import coerce_bool, normalize_panels
+from panel_utils import coerce_bool, normalize_panels, panels_to_editor_rows, apply_editor_rows
 
 
 class PanelUtilsTests(unittest.TestCase):
@@ -24,6 +24,18 @@ class PanelUtilsTests(unittest.TestCase):
         ]
         normalized = normalize_panels(panels)
         self.assertEqual([p["Grain?"] for p in normalized], [False, True, False, True, False])
+
+    def test_apply_editor_rows_swaps_length_and_width_when_requested(self):
+        rows = panels_to_editor_rows([
+            {"Label": "Part A", "Width": 200, "Length": 800, "Qty": 1, "Grain?": False, "Material": "X"}
+        ])
+        rows[0]["Swap L↔W"] = True
+
+        normalized_panels, normalized_editor_rows = apply_editor_rows(rows)
+
+        self.assertEqual(normalized_panels[0]["Width"], 800)
+        self.assertEqual(normalized_panels[0]["Length"], 200)
+        self.assertFalse(normalized_editor_rows[0]["Swap L↔W"])
 
 
 if __name__ == "__main__":

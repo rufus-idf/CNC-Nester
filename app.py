@@ -582,14 +582,24 @@ with col2:
         st.write("---")
         st.markdown("### 3. Nested Result")
 
+        preview_sheets = [
+            (idx, sheet)
+            for idx, sheet in enumerate(st.session_state.manual_layout["sheets"])
+            if sheet.get("parts")
+        ]
+
         if MACHINE_TYPE == "Flat Bed":
             action_col1, action_col2 = st.columns([1, 2])
             with action_col1:
                 if st.button("Manual Nesting Tuning"):
                     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
                         st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
-                        first_sheet_parts = st.session_state.manual_layout_draft["sheets"][0]["parts"]
-                        st.session_state.manual_selected_part_id = first_sheet_parts[0]["id"] if first_sheet_parts else None
+                        first_non_empty_parts = []
+                        for sheet in st.session_state.manual_layout_draft["sheets"]:
+                            if sheet.get("parts"):
+                                first_non_empty_parts = sheet["parts"]
+                                break
+                        st.session_state.manual_selected_part_id = first_non_empty_parts[0]["id"] if first_non_empty_parts else None
                         st.session_state.manual_part_select = st.session_state.manual_selected_part_id
                         st.session_state.show_manual_tuning = True
                         st.rerun()
@@ -598,17 +608,14 @@ with col2:
         else:
             st.caption("Selco mode: sheet preview only (manual tuning is disabled).")
 
-        if MACHINE_TYPE == "Selco":
-            for sheet_idx, sheet in enumerate(st.session_state.manual_layout["sheets"]):
-                with st.expander(f"Preview Sheet {sheet['sheet_index'] + 1}", expanded=(sheet_idx == 0)):
-                    if not sheet.get("parts"):
-                        st.info("No parts on this sheet.")
-                    draw_layout_sheet(st.session_state.manual_layout, sheet_idx)
+        if not preview_sheets:
+            st.warning("No previewable sheets were generated.")
         else:
-            sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in st.session_state.manual_layout["sheets"]]
+            sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in preview_sheets]
             preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices)
             preview_sheet_idx = sheet_choices.index(preview_sheet_label)
-            draw_layout_sheet(st.session_state.manual_layout, preview_sheet_idx)
+            actual_sheet_idx = preview_sheets[preview_sheet_idx][0]
+            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx)
 
 if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()

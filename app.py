@@ -6,6 +6,7 @@ import io
 import csv
 import zipfile
 import ezdxf
+import hashlib
 from streamlit_gsheets import GSheetsConnection
 from nesting_engine import run_smart_nesting
 from panel_utils import normalize_panels
@@ -194,14 +195,20 @@ with col1:
     )
 
     uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf"], accept_multiple_files=False)
-    if uploaded_nest is not None:
-        try:
-            payload = dxf_to_payload(uploaded_nest.read())
-            loaded = parse_nest_payload(payload)
-            st.session_state["pending_loaded_nest"] = loaded
-            st.rerun()
-        except Exception as e:
-            st.error(f"Failed to load nest file: {e}")
+    if uploaded_nest is None:
+        st.session_state.pop("last_loaded_nest_signature", None)
+    else:
+        file_bytes = uploaded_nest.getvalue()
+        upload_signature = f"{uploaded_nest.name}:{len(file_bytes)}:{hashlib.md5(file_bytes).hexdigest()}"
+        if st.session_state.get("last_loaded_nest_signature") != upload_signature:
+            try:
+                payload = dxf_to_payload(file_bytes)
+                loaded = parse_nest_payload(payload)
+                st.session_state["pending_loaded_nest"] = loaded
+                st.session_state["last_loaded_nest_signature"] = upload_signature
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to load nest file: {e}")
 
     if st.session_state['panels']:
         st.write("---")

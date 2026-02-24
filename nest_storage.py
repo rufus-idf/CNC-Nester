@@ -1,6 +1,9 @@
 import json
 import base64
+import io
 from datetime import datetime
+
+import ezdxf
 
 from nesting_engine import run_smart_nesting
 from panel_utils import normalize_panels
@@ -81,6 +84,65 @@ def payload_to_dxf(payload):
     return ("\n".join(dxf_lines) + "\n").encode("utf-8")
 
 
+
+
+def _polyline_bbox(points):
+    xs = [float(point[0]) for point in points]
+    ys = [float(point[1]) for point in points]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _payload_from_dxf_geometry(dxf_bytes):
+    dxf_text = dxf_bytes.decode("utf-8", errors="ignore")
+    doc = ezdxf.read(io.StringIO(dxf_text))
+    msp = doc.modelspace()
+
+    sheet_w = 2440.0
+    sheet_h = 1220.0
+    panels = []
+
+    for entity in msp.query("LWPOLYLINE"):
+        layer = (entity.dxf.layer or "").upper()
+        points = list(entity.get_points("xy"))
+        if len(points) < 4:
+            continue
+
+        min_x, min_y, max_x, max_y = _polyline_bbox(points)
+        width = max_x - min_x
+        height = max_y - min_y
+        if width <= 0 or height <= 0:
+            continue
+
+        if layer == "SHEET_BOUNDARY":
+            sheet_w = width
+            sheet_h = height
+        elif layer == "CUT_LINES":
+            panels.append({
+                "Label": f"Loaded Part {len(panels) + 1}",
+                "Width": width,
+                "Length": height,
+                "Qty": 1,
+                "Grain?": False,
+                "Material": "Loaded DXF",
+            })
+
+    if not panels:
+        raise ValueError("No CNC Nester payload metadata found in DXF")
+
+    return {
+        "version": 1,
+        "nest_name": "Imported DXF Nest",
+        "saved_at": datetime.utcnow().isoformat() + "Z",
+        "settings": {
+            "sheet_w": float(sheet_w),
+            "sheet_h": float(sheet_h),
+            "margin": 0.0,
+            "kerf": 0.0,
+        },
+        "panels": normalize_panels(panels),
+        "packed_sheets": [],
+    }
+
 def dxf_to_payload(dxf_bytes):
     lines = dxf_bytes.decode("utf-8").splitlines()
     comments = []
@@ -89,7 +151,7 @@ def dxf_to_payload(dxf_bytes):
             comments.append(lines[i + 1].strip())
 
     if _DXF_MARKER_BEGIN not in comments or _DXF_MARKER_END not in comments:
-        raise ValueError("No CNC Nester payload metadata found in DXF")
+        return _payload_from_dxf_geometry(dxf_bytes)
 
     start = comments.index(_DXF_MARKER_BEGIN) + 1
     end = comments.index(_DXF_MARKER_END)

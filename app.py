@@ -5,10 +5,12 @@ import matplotlib.patches as patches
 import io
 import csv
 import zipfile
+import json
 import ezdxf
 from streamlit_gsheets import GSheetsConnection
 from nesting_engine import run_smart_nesting
 from panel_utils import normalize_panels
+from nest_storage import build_nest_payload, parse_nest_payload, payload_to_json
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -20,6 +22,10 @@ if 'sheet_w' not in st.session_state:
     st.session_state.sheet_w = 2440.0
 if 'sheet_h' not in st.session_state:
     st.session_state.sheet_h = 1220.0
+if 'kerf' not in st.session_state:
+    st.session_state.kerf = 6.0
+if 'margin' not in st.session_state:
+    st.session_state.margin = 10.0
 
 
 # --- HELPERS ---
@@ -78,8 +84,8 @@ st.sidebar.header("⚙️ Machine Settings")
 st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset", on_change=update_sheet_dims)
 SHEET_W = st.sidebar.number_input("Sheet Width", key="sheet_w", step=10.0)
 SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
-KERF = st.sidebar.number_input("Kerf", value=6.0)
-MARGIN = st.sidebar.number_input("Margin", value=10.0)
+KERF = st.sidebar.number_input("Kerf", key="kerf")
+MARGIN = st.sidebar.number_input("Margin", key="margin")
 
 # --- MAIN PAGE ---
 st.title("🪚 CNC Nester Pro (Robust)")
@@ -152,6 +158,34 @@ with col1:
                 st.success(f"Added {c}")
             except Exception:
                 st.error("Error")
+
+    st.write("---")
+    st.markdown("### Save / Load Nest")
+    nest_name = st.text_input("Nest Name", value="My Nest")
+
+    save_payload = build_nest_payload(nest_name, SHEET_W, SHEET_H, MARGIN, KERF, st.session_state['panels'])
+    st.download_button(
+        "💾 Save Nest",
+        data=payload_to_json(save_payload),
+        file_name=f"{nest_name.strip().replace(' ', '_') or 'nest'}.json",
+        mime="application/json",
+        type="secondary",
+    )
+
+    uploaded_nest = st.file_uploader("📂 Load Nest", type=["json"], accept_multiple_files=False)
+    if uploaded_nest is not None:
+        try:
+            payload = json.loads(uploaded_nest.read().decode("utf-8"))
+            loaded = parse_nest_payload(payload)
+            st.session_state.sheet_w = loaded["sheet_w"]
+            st.session_state.sheet_h = loaded["sheet_h"]
+            st.session_state.kerf = loaded["kerf"]
+            st.session_state.margin = loaded["margin"]
+            st.session_state["panels"] = loaded["panels"]
+            st.success(f"Loaded nest: {loaded['nest_name']}")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to load nest file: {e}")
 
     if st.session_state['panels']:
         st.write("---")

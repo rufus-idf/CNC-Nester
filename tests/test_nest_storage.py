@@ -23,6 +23,26 @@ class NestStorageTests(unittest.TestCase):
         self.assertEqual(parsed["margin"], 0.0)
         self.assertEqual(len(parsed["panels"]), 2)
         self.assertIn("packed_sheets", payload)
+        self.assertEqual(parsed["machine_type"], "Flat Bed")
+
+    def test_selco_machine_type_round_trip(self):
+        payload = build_nest_payload(
+            "Selco Job",
+            3050,
+            1220,
+            0,
+            0,
+            [{"Label": "Panel", "Width": 600, "Length": 800, "Qty": 2, "Grain?": False, "Material": "Ply"}],
+            machine_type="Selco",
+        )
+
+        self.assertEqual(payload["settings"]["machine_type"], "Selco")
+
+        loaded_payload = dxf_to_payload(payload_to_dxf(payload))
+        parsed = parse_nest_payload(loaded_payload)
+
+        self.assertEqual(parsed["machine_type"], "Selco")
+
 
     def test_payload_to_dxf_and_back_round_trip(self):
         payload = build_nest_payload(

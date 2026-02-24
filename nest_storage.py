@@ -1,4 +1,5 @@
 import json
+import base64
 from datetime import datetime
 
 from nesting_engine import run_smart_nesting
@@ -54,3 +55,44 @@ def parse_nest_payload(payload):
 
 def payload_to_json(payload):
     return json.dumps(payload, indent=2)
+
+
+_DXF_MARKER_BEGIN = "CNC_NESTER_PAYLOAD_BASE64_BEGIN"
+_DXF_MARKER_END = "CNC_NESTER_PAYLOAD_BASE64_END"
+
+
+def payload_to_dxf(payload):
+    payload_bytes = payload_to_json(payload).encode("utf-8")
+    encoded_payload = base64.b64encode(payload_bytes).decode("ascii")
+    chunks = [encoded_payload[i:i + 250] for i in range(0, len(encoded_payload), 250)]
+
+    dxf_lines = [
+        "0", "SECTION",
+        "2", "HEADER",
+        "999", _DXF_MARKER_BEGIN,
+    ]
+    for chunk in chunks:
+        dxf_lines.extend(["999", chunk])
+    dxf_lines.extend([
+        "999", _DXF_MARKER_END,
+        "0", "ENDSEC",
+        "0", "EOF",
+    ])
+    return ("\n".join(dxf_lines) + "\n").encode("utf-8")
+
+
+def dxf_to_payload(dxf_bytes):
+    lines = dxf_bytes.decode("utf-8").splitlines()
+    comments = []
+    for i in range(0, len(lines) - 1, 2):
+        if lines[i].strip() == "999":
+            comments.append(lines[i + 1].strip())
+
+    if _DXF_MARKER_BEGIN not in comments or _DXF_MARKER_END not in comments:
+        raise ValueError("No CNC Nester payload metadata found in DXF")
+
+    start = comments.index(_DXF_MARKER_BEGIN) + 1
+    end = comments.index(_DXF_MARKER_END)
+    encoded_payload = "".join(comments[start:end])
+    payload_json = base64.b64decode(encoded_payload.encode("ascii")).decode("utf-8")
+    return json.loads(payload_json)

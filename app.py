@@ -588,6 +588,15 @@ with col2:
             if sheet.get("parts")
         ]
 
+        if not preview_sheets:
+            st.warning("No previewable sheets were generated.")
+        else:
+            sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in preview_sheets]
+            preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices, key="preview_sheet_select")
+            preview_sheet_idx = sheet_choices.index(preview_sheet_label)
+            actual_sheet_idx = preview_sheets[preview_sheet_idx][0]
+            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx)
+
         if MACHINE_TYPE == "Flat Bed":
             action_col1, action_col2 = st.columns([1, 2])
             with action_col1:
@@ -607,15 +616,6 @@ with col2:
                 st.caption("Manual tuning opens in a popup. Click 'Apply to Nest' to commit your changes.")
         else:
             st.caption("Selco mode: sheet preview only (manual tuning is disabled).")
-
-        if not preview_sheets:
-            st.warning("No previewable sheets were generated.")
-        else:
-            sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in preview_sheets]
-            preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices)
-            preview_sheet_idx = sheet_choices.index(preview_sheet_label)
-            actual_sheet_idx = preview_sheets[preview_sheet_idx][0]
-            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx)
 
 if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()

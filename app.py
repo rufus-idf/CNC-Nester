@@ -598,10 +598,17 @@ with col2:
         else:
             st.caption("Selco mode: sheet preview only (manual tuning is disabled).")
 
-        sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in st.session_state.manual_layout["sheets"]]
-        preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices)
-        preview_sheet_idx = sheet_choices.index(preview_sheet_label)
-        draw_layout_sheet(st.session_state.manual_layout, preview_sheet_idx)
+        if MACHINE_TYPE == "Selco":
+            for sheet_idx, sheet in enumerate(st.session_state.manual_layout["sheets"]):
+                with st.expander(f"Preview Sheet {sheet['sheet_index'] + 1}", expanded=(sheet_idx == 0)):
+                    if not sheet.get("parts"):
+                        st.info("No parts on this sheet.")
+                    draw_layout_sheet(st.session_state.manual_layout, sheet_idx)
+        else:
+            sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in st.session_state.manual_layout["sheets"]]
+            preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices)
+            preview_sheet_idx = sheet_choices.index(preview_sheet_label)
+            draw_layout_sheet(st.session_state.manual_layout, preview_sheet_idx)
 
 if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()

@@ -567,8 +567,12 @@ with col2:
             else:
                 st.success(f"Success! All {total_packed} panels nested on {len(packer)} Sheets.")
 
-            st.session_state.manual_layout = initialize_layout_from_packer(packer, MARGIN, KERF, SHEET_W, SHEET_H)
-            st.session_state.manual_layout_draft = None
+            if MACHINE_TYPE == "Flat Bed":
+                st.session_state.manual_layout = initialize_layout_from_packer(packer, MARGIN, KERF, SHEET_W, SHEET_H)
+                st.session_state.manual_layout_draft = None
+            else:
+                st.session_state.manual_layout = None
+                st.session_state.manual_layout_draft = None
 
     if st.session_state.last_packer:
         dxf = create_dxf_zip(st.session_state.last_packer, SHEET_W, SHEET_H, MARGIN, KERF)

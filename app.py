@@ -131,40 +131,85 @@ def draw_layout_sheet(layout, selected_sheet_idx):
 
 def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
     selected_sheet = layout["sheets"][selected_sheet_idx]
-    rows = []
+    part_ids = [p["id"] for p in selected_sheet["parts"]]
+
+    # Keep geometry accurate by preserving sheet aspect ratio in a bounded viewport.
+    max_plot_w = 1200
+    max_plot_h = 560
+    scale = min(max_plot_w / layout["sheet_w"], max_plot_h / layout["sheet_h"])
+    plot_w = max(600, int(layout["sheet_w"] * scale))
+    plot_h = max(260, int(layout["sheet_h"] * scale))
+
+    rows = [
+        {
+            "part_id": "__sheet__",
+            "kind": "sheet",
+            "x": 0.0,
+            "x2": float(layout["sheet_w"]),
+            "y": 0.0,
+            "y2": float(layout["sheet_h"]),
+            "label": "Sheet",
+            "dims": f"{int(layout['sheet_w'])}x{int(layout['sheet_h'])}",
+            "display_color": "#eef5ff",
+            "stroke_color": "#333",
+            "base_stroke": 2,
+        },
+        {
+            "part_id": "__margin__",
+            "kind": "margin",
+            "x": float(layout["margin"]),
+            "x2": float(layout["sheet_w"] - layout["margin"]),
+            "y": float(layout["margin"]),
+            "y2": float(layout["sheet_h"] - layout["margin"]),
+            "label": "Margin",
+            "dims": "",
+            "display_color": "rgba(0,0,0,0)",
+            "stroke_color": "#cc0000",
+            "base_stroke": 2,
+        },
+    ]
+
     for part in selected_sheet["parts"]:
         rows.append({
             "part_id": part["id"],
+            "kind": "part",
+            "x": float(part["x"]),
+            "x2": float(part["x"] + part["w"]),
+            "y": float(part["y"]),
+            "y2": float(part["y"] + part["h"]),
             "label": part["rid"],
-            "x": part["x"],
-            "x2": part["x"] + part["w"],
-            "y": part["y"],
-            "y2": part["y"] + part["h"],
             "dims": f"{int(part['w'])}x{int(part['h'])}",
             "display_color": "#f39c12" if part["id"] == selected_part_id else ("#2e7d32" if part.get("rotated") else "#4a90e2"),
+            "stroke_color": "#222",
+            "base_stroke": 1,
         })
 
-    parts_df = pd.DataFrame(rows)
+    chart_df = pd.DataFrame(rows)
     selector = alt.selection_point(fields=["part_id"], name="part_pick")
 
     chart = (
-        alt.Chart(parts_df)
-        .mark_rect(stroke="#222")
+        alt.Chart(chart_df)
+        .mark_rect()
         .encode(
             x=alt.X("x:Q", scale=alt.Scale(domain=[0, layout["sheet_w"]]), axis=None),
             x2="x2:Q",
-            y=alt.Y("y:Q", scale=alt.Scale(domain=[0, layout["sheet_h"]]), axis=None),
+            # Flip y-axis so origin is bottom-left, matching preview drawing.
+            y=alt.Y("y:Q", scale=alt.Scale(domain=[layout["sheet_h"], 0]), axis=None),
             y2="y2:Q",
             color=alt.Color("display_color:N", scale=None, legend=None),
-            strokeWidth=alt.condition(selector, alt.value(4), alt.value(1)),
+            stroke=alt.Color("stroke_color:N", scale=None, legend=None),
+            strokeWidth=alt.condition(
+                selector,
+                alt.value(4),
+                alt.value(1),
+            ),
             tooltip=["label:N", "dims:N", "part_id:N"],
         )
         .add_params(selector)
-        .properties(height=760)
+        .properties(width=plot_w, height=plot_h)
     )
 
-    event = st.altair_chart(chart, width="stretch", on_select="rerun", selection_mode="part_pick")
-
+    event = st.altair_chart(chart, width="content", on_select="rerun", selection_mode="part_pick")
     st.caption("Tip: click any panel in the diagram to select it for nudging/rotation.")
 
     selected = None
@@ -177,6 +222,9 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
             ids = picked.get("part_id")
             if isinstance(ids, list) and ids:
                 selected = ids[0]
+
+    if selected not in part_ids:
+        return None
     return selected
 
 
@@ -186,8 +234,11 @@ def manual_tuning_dialog():
         """
         <style>
         div[role="dialog"] > div {
-            width: 95vw !important;
-            max-width: 95vw !important;
+            width: min(92vw, 1500px) !important;
+            max-width: min(92vw, 1500px) !important;
+        }
+        div[role="dialog"] {
+            overflow: auto !important;
         }
         </style>
         """,

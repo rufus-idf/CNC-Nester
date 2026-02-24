@@ -236,11 +236,24 @@ def manual_tuning_dialog():
     st.markdown(
         """
         <style>
-        div[role="dialog"] > div {
-            width: min(92vw, 1500px) !important;
-            max-width: min(92vw, 1500px) !important;
+        div[data-testid="stDialog"] {
+            width: 100vw !important;
+            max-width: 100vw !important;
         }
-        div[role="dialog"] {
+        div[data-testid="stDialog"] > div {
+            width: 100vw !important;
+            max-width: 100vw !important;
+            height: 100vh !important;
+            max-height: 100vh !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
+            inset: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            transform: none !important;
+        }
+        div[data-testid="stDialog"] [data-testid="stDialogContent"] {
+            max-height: 100vh !important;
             overflow: auto !important;
         }
         </style>

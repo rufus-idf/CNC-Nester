@@ -582,18 +582,21 @@ with col2:
         st.write("---")
         st.markdown("### 3. Nested Result")
 
-        action_col1, action_col2 = st.columns([1, 2])
-        with action_col1:
-            if st.button("Manual Nesting Tuning"):
-                if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
-                    st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
-                    first_sheet_parts = st.session_state.manual_layout_draft["sheets"][0]["parts"]
-                    st.session_state.manual_selected_part_id = first_sheet_parts[0]["id"] if first_sheet_parts else None
-                    st.session_state.manual_part_select = st.session_state.manual_selected_part_id
-                    st.session_state.show_manual_tuning = True
-                    st.rerun()
-        with action_col2:
-            st.caption("Manual tuning opens in a popup. Click 'Apply to Nest' to commit your changes.")
+        if MACHINE_TYPE == "Flat Bed":
+            action_col1, action_col2 = st.columns([1, 2])
+            with action_col1:
+                if st.button("Manual Nesting Tuning"):
+                    if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
+                        st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
+                        first_sheet_parts = st.session_state.manual_layout_draft["sheets"][0]["parts"]
+                        st.session_state.manual_selected_part_id = first_sheet_parts[0]["id"] if first_sheet_parts else None
+                        st.session_state.manual_part_select = st.session_state.manual_selected_part_id
+                        st.session_state.show_manual_tuning = True
+                        st.rerun()
+            with action_col2:
+                st.caption("Manual tuning opens in a popup. Click 'Apply to Nest' to commit your changes.")
+        else:
+            st.caption("Selco mode: sheet preview only (manual tuning is disabled).")
 
         sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in st.session_state.manual_layout["sheets"]]
         preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices)

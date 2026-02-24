@@ -302,7 +302,7 @@ def manual_tuning_dialog():
     rotate = c5.button("🔄 Rotate 90°")
 
     if move_up:
-        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, 0, -nudge)
+        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, 0, nudge)
         st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
     if move_left:
@@ -314,7 +314,7 @@ def manual_tuning_dialog():
         st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
     if move_down:
-        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, 0, nudge)
+        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, 0, -nudge)
         st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
     if rotate:

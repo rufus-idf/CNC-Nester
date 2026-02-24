@@ -38,6 +38,8 @@ if 'show_manual_tuning' not in st.session_state:
     st.session_state.show_manual_tuning = False
 if 'last_packer' not in st.session_state:
     st.session_state.last_packer = None
+if 'manual_selected_part_id' not in st.session_state:
+    st.session_state.manual_selected_part_id = None
 
 
 def apply_pending_loaded_nest():
@@ -126,8 +128,71 @@ def draw_layout_sheet(layout, selected_sheet_idx):
     st.pyplot(fig)
 
 
-@st.dialog("Manual Nesting Tuning")
+def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
+    selected_sheet = layout["sheets"][selected_sheet_idx]
+    clicked = st.query_params.get("manual_part")
+    if clicked:
+        del st.query_params["manual_part"]
+
+    svg_parts = [
+        f'<svg viewBox="0 0 {layout["sheet_w"]} {layout["sheet_h"]}" width="100%" style="background:#eef5ff;border:1px solid #333;max-height:72vh;">',
+        (
+            f'<rect x="{layout["margin"]}" y="{layout["margin"]}" '
+            f'width="{layout["sheet_w"] - 2 * layout["margin"]}" '
+            f'height="{layout["sheet_h"] - 2 * layout["margin"]}" '
+            'fill="none" stroke="red" stroke-dasharray="20,12" stroke-width="3"/>'
+        ),
+    ]
+
+    for part in selected_sheet["parts"]:
+        is_selected = part["id"] == selected_part_id
+        fill = '#2e7d32' if part.get('rotated') else '#4a90e2'
+        if is_selected:
+            fill = '#f39c12'
+
+        center_x = part["x"] + part["w"] / 2
+        center_y = part["y"] + part["h"] / 2
+        text = f"{part['rid']} ({int(part['w'])}x{int(part['h'])})"
+        svg_parts.append(
+            (
+                f'<a href="?manual_part={part["id"]}">'
+                f'<rect x="{part["x"]}" y="{part["y"]}" width="{part["w"]}" height="{part["h"]}" '
+                f'fill="{fill}" stroke="#222" stroke-width="{4 if is_selected else 1}" style="cursor:pointer"/>'
+                f'<title>{text}</title>'
+                '</a>'
+            )
+        )
+        svg_parts.append(
+            (
+                f'<text x="{center_x}" y="{center_y}" text-anchor="middle" dominant-baseline="middle" '
+                'font-size="20" fill="#111" style="pointer-events:none">'
+                f'{part["rid"]}</text>'
+            )
+        )
+
+    svg_parts.append('</svg>')
+    st.markdown("".join(svg_parts), unsafe_allow_html=True)
+    st.caption("Tip: click any panel in the diagram to select it for nudging/rotation.")
+
+    return clicked
+
+
+@st.dialog("Manual Nesting Tuning", width="large")
 def manual_tuning_dialog():
+    st.markdown(
+        """
+        <style>
+        div[role="dialog"] > div {
+            width: min(98vw, 1800px) !important;
+        }
+        div[role="dialog"] section.main {
+            max-height: 92vh !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
     layout = st.session_state.manual_layout_draft
     if not layout or not layout.get("sheets"):
         st.info("Run smart nesting first.")
@@ -138,9 +203,25 @@ def manual_tuning_dialog():
     selected_sheet_idx = sheet_choices.index(selected_sheet_label)
     selected_sheet = layout["sheets"][selected_sheet_idx]
 
-    part_choices = [f"{p['id']} | {p['rid']} ({int(p['w'])}x{int(p['h'])})" for p in selected_sheet["parts"]]
-    selected_part_label = st.selectbox("Part to move/rotate", part_choices, key="manual_part_select")
-    selected_part_id = selected_part_label.split(" | ")[0]
+    part_ids = [p["id"] for p in selected_sheet["parts"]]
+    part_label_map = {p["id"]: f"{p['rid']} ({int(p['w'])}x{int(p['h'])})" for p in selected_sheet["parts"]}
+
+    if st.session_state.manual_selected_part_id not in part_ids:
+        st.session_state.manual_selected_part_id = part_ids[0]
+
+    clicked_part_id = draw_interactive_layout(layout, selected_sheet_idx, st.session_state.manual_selected_part_id)
+    if clicked_part_id in part_ids and clicked_part_id != st.session_state.manual_selected_part_id:
+        st.session_state.manual_selected_part_id = clicked_part_id
+        st.rerun()
+
+    selected_part_id = st.selectbox(
+        "Part to move/rotate",
+        options=part_ids,
+        index=part_ids.index(st.session_state.manual_selected_part_id),
+        format_func=lambda pid: part_label_map[pid],
+        key="manual_part_select",
+    )
+    st.session_state.manual_selected_part_id = selected_part_id
 
     nudge = st.number_input("Move step (mm)", min_value=1.0, value=10.0, step=1.0, key="manual_nudge")
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -171,7 +252,6 @@ def manual_tuning_dialog():
         (st.success if ok else st.error)(msg)
         st.rerun()
 
-    draw_layout_sheet(layout, selected_sheet_idx)
     d1, d2 = st.columns(2)
     if d1.button("Apply to Nest", type="primary"):
         st.session_state.manual_layout = copy.deepcopy(st.session_state.manual_layout_draft)

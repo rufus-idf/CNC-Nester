@@ -6,8 +6,9 @@ import io
 import csv
 import zipfile
 import ezdxf
-from rectpack import newPacker, PackingMode, MaxRectsBl, MaxRectsBssf, MaxRectsBaf
 from streamlit_gsheets import GSheetsConnection
+from nesting_engine import run_smart_nesting
+from panel_utils import normalize_panels
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -31,14 +32,6 @@ def clear_data():
     st.session_state['panels'] = []
     if 'panels_editor' in st.session_state:
         del st.session_state['panels_editor']
-
-def normalize_panels(panels):
-    normalized = []
-    for p in panels:
-        row = dict(p)
-        row["Grain?"] = bool(row.get("Grain?", False))
-        normalized.append(row)
-    return normalized
 
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
     zip_buffer = io.BytesIO()
@@ -78,97 +71,6 @@ def update_sheet_dims():
         st.session_state.sheet_h = 1220.0
 
 # --- ROBUST SOLVER ENGINE ---
-def solve_packer(panels, sheet_w, sheet_h, margin, kerf, rotate_flexible_panels=False):
-    """
-    Runs one specific rotation strategy.
-    Returns: (packer_object, items_packed_count, num_sheets)
-    """
-    usable_w = sheet_w - (margin * 2)
-    usable_h = sheet_h - (margin * 2)
-    
-    # We test 3 packing algorithms for this strategy
-    algos = [MaxRectsBl, MaxRectsBssf, MaxRectsBaf]
-    
-    best_algo_packer = None
-    best_algo_items = -1
-    best_algo_sheets = float('inf')
-    
-    # Calculate total expected items for safety loop
-    total_input_items = sum(p['Qty'] for p in panels)
-    
-    for algo in algos:
-        packer = newPacker(mode=PackingMode.Offline, pack_algo=algo, rotation=False)
-        
-        # ADD RECTANGLES
-        for p in panels:
-            for _ in range(p['Qty']):
-                p_w = p['Width']
-                p_l = p['Length']
-                grain = p['Grain?']
-                rid_label = f"{p['Label']}{'(G)' if grain else ''}"
-                
-                real_w = p_w + kerf
-                real_l = p_l + kerf
-                
-                # APPLY ROTATION STRATEGY
-                if grain:
-                    # Locked Grain: Must use input dims
-                    packer.add_rect(real_w, real_l, rid=rid_label)
-                else:
-                    if rotate_flexible_panels:
-                        # Strategy B: Force Rotate
-                        packer.add_rect(real_l, real_w, rid=rid_label)
-                    else:
-                        # Strategy A: Keep Original
-                        packer.add_rect(real_w, real_l, rid=rid_label)
-
-        # ADD BINS (Dynamic safety limit)
-        # We add enough bins to cover worst case (1 item per sheet + buffer)
-        safety_bins = max(300, total_input_items + 50)
-        for _ in range(safety_bins):
-            packer.add_bin(usable_w, usable_h)
-
-        packer.pack()
-        
-        # SCORING THE ALGO
-        items_packed = len(packer.rect_list())
-        sheets_used = len(packer)
-        
-        # PRIORITIZE MAX ITEMS, THEN MIN SHEETS
-        if items_packed > best_algo_items:
-            best_algo_packer = packer
-            best_algo_items = items_packed
-            best_algo_sheets = sheets_used
-        elif items_packed == best_algo_items:
-            if sheets_used < best_algo_sheets:
-                best_algo_packer = packer
-                best_algo_sheets = sheets_used
-    
-    return best_algo_packer
-
-def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
-    # RUN SIMULATION A (Standard)
-    packer_a = solve_packer(panels, sheet_w, sheet_h, margin, kerf, False)
-    items_a = len(packer_a.rect_list()) if packer_a else 0
-    sheets_a = len(packer_a) if packer_a else float('inf')
-
-    # RUN SIMULATION B (Rotated 90)
-    packer_b = solve_packer(panels, sheet_w, sheet_h, margin, kerf, True)
-    items_b = len(packer_b.rect_list()) if packer_b else 0
-    sheets_b = len(packer_b) if packer_b else float('inf')
-    
-    # COMPARE SIMULATIONS
-    # 1. Who packed more items? (The most critical check!)
-    if items_b > items_a:
-        return packer_b
-    elif items_a > items_b:
-        return packer_a
-    else:
-        # 2. If tied on items, who used fewer sheets?
-        if sheets_b < sheets_a:
-            return packer_b
-        else:
-            return packer_a
 
 # --- SIDEBAR ---
 st.sidebar.header("⚙️ Machine Settings")

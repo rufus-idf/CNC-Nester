@@ -9,7 +9,7 @@ from nesting_engine import run_smart_nesting
 from panel_utils import normalize_panels
 
 
-def build_nest_payload(nest_name, sheet_w, sheet_h, margin, kerf, panels):
+def build_nest_payload(nest_name, sheet_w, sheet_h, margin, kerf, panels, manual_layout=None):
     normalized_panels = normalize_panels(panels)
     payload = {
         "version": 1,
@@ -25,27 +25,41 @@ def build_nest_payload(nest_name, sheet_w, sheet_h, margin, kerf, panels):
         "packed_sheets": [],
     }
 
-    packer = run_smart_nesting(normalized_panels, sheet_w, sheet_h, margin, kerf)
-    if packer:
-        for sheet_index, bin in enumerate(packer):
-            rects = []
-            for rect in bin:
-                rects.append({
-                    "x": float(rect.x),
-                    "y": float(rect.y),
-                    "width": float(rect.width),
-                    "height": float(rect.height),
-                    "rid": str(rect.rid) if rect.rid else "Part",
+    if manual_layout and manual_layout.get("sheets"):
+        payload["packed_sheets"] = manual_layout.get("sheets", [])
+    else:
+        packer = run_smart_nesting(normalized_panels, sheet_w, sheet_h, margin, kerf)
+        if packer:
+            for sheet_index, bin in enumerate(packer):
+                rects = []
+                for rect in bin:
+                    rects.append({
+                        "x": float(rect.x),
+                        "y": float(rect.y),
+                        "width": float(rect.width),
+                        "height": float(rect.height),
+                        "rid": str(rect.rid) if rect.rid else "Part",
+                    })
+                payload["packed_sheets"].append({
+                    "sheet_index": sheet_index,
+                    "rects": rects,
                 })
-            payload["packed_sheets"].append({
-                "sheet_index": sheet_index,
-                "rects": rects,
-            })
     return payload
 
 
 def parse_nest_payload(payload):
     settings = payload.get("settings", {})
+    packed_sheets = payload.get("packed_sheets", [])
+    manual_layout = None
+    if packed_sheets and isinstance(packed_sheets, list) and "parts" in packed_sheets[0]:
+        manual_layout = {
+            "sheet_w": float(settings.get("sheet_w", 2440.0)),
+            "sheet_h": float(settings.get("sheet_h", 1220.0)),
+            "kerf": float(settings.get("kerf", 6.0)),
+            "margin": float(settings.get("margin", 10.0)),
+            "sheets": packed_sheets,
+        }
+
     return {
         "sheet_w": float(settings.get("sheet_w", 2440.0)),
         "sheet_h": float(settings.get("sheet_h", 1220.0)),
@@ -53,6 +67,7 @@ def parse_nest_payload(payload):
         "margin": float(settings.get("margin", 10.0)),
         "panels": normalize_panels(payload.get("panels", [])),
         "nest_name": str(payload.get("nest_name", "Untitled")),
+        "manual_layout": manual_layout,
     }
 
 

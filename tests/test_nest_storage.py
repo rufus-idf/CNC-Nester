@@ -41,6 +41,47 @@ class NestStorageTests(unittest.TestCase):
         self.assertEqual(loaded_payload["settings"]["sheet_w"], 2800.0)
         self.assertEqual(len(loaded_payload["panels"]), 1)
 
+
+    def test_manual_layout_round_trip(self):
+        manual_layout = {
+            "sheet_w": 2440.0,
+            "sheet_h": 1220.0,
+            "margin": 10.0,
+            "kerf": 6.0,
+            "sheets": [
+                {
+                    "sheet_index": 0,
+                    "parts": [
+                        {
+                            "id": "S1-P1",
+                            "rid": "Panel A",
+                            "x": 100.0,
+                            "y": 120.0,
+                            "w": 300.0,
+                            "h": 400.0,
+                            "rotated": False,
+                        }
+                    ],
+                }
+            ],
+        }
+        payload = build_nest_payload(
+            "Manual Layout",
+            2440,
+            1220,
+            10,
+            6,
+            [{"Label": "Panel A", "Width": 300, "Length": 400, "Qty": 1, "Grain?": False, "Material": "Ply"}],
+            manual_layout=manual_layout,
+        )
+
+        loaded_payload = dxf_to_payload(payload_to_dxf(payload))
+        parsed = parse_nest_payload(loaded_payload)
+
+        self.assertIsNotNone(parsed["manual_layout"])
+        self.assertEqual(parsed["manual_layout"]["sheets"][0]["parts"][0]["x"], 100.0)
+        self.assertEqual(parsed["manual_layout"]["sheets"][0]["parts"][0]["y"], 120.0)
+
     def test_dxf_without_payload_raises_error(self):
         dxf_bytes = b"0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nEOF\n"
 

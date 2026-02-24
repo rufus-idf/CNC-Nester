@@ -1,4 +1,13 @@
-from rectpack import newPacker, PackingMode, MaxRectsBl, MaxRectsBssf, MaxRectsBaf
+from rectpack import (
+    newPacker,
+    PackingMode,
+    MaxRectsBl,
+    MaxRectsBssf,
+    MaxRectsBaf,
+    GuillotineBafLas,
+    GuillotineBssfLas,
+    GuillotineBlsfLas,
+)
 
 
 def solve_packer(
@@ -104,3 +113,54 @@ def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
 
     # Prefer maximum packed parts, then fewer sheets.
     return min(candidates, key=lambda p: (-len(p.rect_list()), len(p)))
+
+
+def run_selco_nesting(panels, sheet_w, sheet_h, margin, kerf):
+    """
+    Selco-friendly nesting mode.
+
+    Uses guillotine packing algorithms to better align with beam saw style,
+    while preserving grain lock behavior.
+    """
+    usable_w = sheet_w - (margin * 2)
+    usable_h = sheet_h - (margin * 2)
+
+    algos = [GuillotineBafLas, GuillotineBssfLas, GuillotineBlsfLas]
+    best_algo_packer = None
+    best_algo_items = -1
+    best_algo_sheets = float("inf")
+
+    total_input_items = sum(p["Qty"] for p in panels)
+
+    for algo in algos:
+        packer = newPacker(
+            mode=PackingMode.Offline,
+            pack_algo=algo,
+            rotation=False,
+        )
+
+        for p in panels:
+            for _ in range(p["Qty"]):
+                real_w = p["Width"] + kerf
+                real_l = p["Length"] + kerf
+                rid_label = f"{p['Label']}{'(G)' if p['Grain?'] else ''}"
+                packer.add_rect(real_w, real_l, rid=rid_label)
+
+        safety_bins = max(300, total_input_items + 50)
+        for _ in range(safety_bins):
+            packer.add_bin(usable_w, usable_h)
+
+        packer.pack()
+
+        items_packed = len(packer.rect_list())
+        sheets_used = len(packer)
+
+        if items_packed > best_algo_items:
+            best_algo_packer = packer
+            best_algo_items = items_packed
+            best_algo_sheets = sheets_used
+        elif items_packed == best_algo_items and sheets_used < best_algo_sheets:
+            best_algo_packer = packer
+            best_algo_sheets = sheets_used
+
+    return best_algo_packer

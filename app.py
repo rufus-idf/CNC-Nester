@@ -43,6 +43,8 @@ if 'manual_selected_part_id' not in st.session_state:
     st.session_state.manual_selected_part_id = None
 if 'manual_part_select' not in st.session_state:
     st.session_state.manual_part_select = None
+if 'manual_notice' not in st.session_state:
+    st.session_state.manual_notice = None
 
 
 def apply_pending_loaded_nest():
@@ -195,8 +197,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
         .encode(
             x=alt.X("x:Q", scale=alt.Scale(domain=[0, layout["sheet_w"]]), axis=None),
             x2="x2:Q",
-            # Flip y-axis so origin is bottom-left, matching preview drawing.
-            y=alt.Y("y:Q", scale=alt.Scale(domain=[layout["sheet_h"], 0]), axis=None),
+            y=alt.Y("y:Q", scale=alt.Scale(domain=[0, layout["sheet_h"]]), axis=None),
             y2="y2:Q",
             color=alt.Color("display_color:N", scale=None, legend=None),
             stroke=alt.Color("stroke_color:N", scale=None, legend=None),
@@ -251,7 +252,8 @@ def manual_tuning_dialog():
     if not layout or not layout.get("sheets"):
         st.session_state.show_manual_tuning = False
         st.session_state.manual_layout_draft = None
-        st.session_state.manual_part_select = None
+        if "manual_part_select" in st.session_state:
+            del st.session_state["manual_part_select"]
         return
 
     sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in layout["sheets"]]
@@ -261,6 +263,14 @@ def manual_tuning_dialog():
 
     part_ids = [p["id"] for p in selected_sheet["parts"]]
     part_label_map = {p["id"]: f"{p['rid']} ({int(p['w'])}x{int(p['h'])})" for p in selected_sheet["parts"]}
+
+    notice = st.session_state.pop("manual_notice", None)
+    if notice:
+        level, msg = notice
+        if level == "error":
+            st.toast(msg, icon="⚠️")
+        else:
+            st.toast(msg, icon="✅")
 
     if st.session_state.manual_selected_part_id not in part_ids:
         st.session_state.manual_selected_part_id = part_ids[0]
@@ -292,37 +302,37 @@ def manual_tuning_dialog():
     rotate = c5.button("🔄 Rotate 90°")
 
     if move_up:
-        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, 0, nudge)
-        (st.success if ok else st.error)(msg)
+        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, 0, -nudge)
+        st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
     if move_left:
         st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, -nudge, 0)
-        (st.success if ok else st.error)(msg)
+        st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
     if move_right:
         st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, nudge, 0)
-        (st.success if ok else st.error)(msg)
+        st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
     if move_down:
-        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, 0, -nudge)
-        (st.success if ok else st.error)(msg)
+        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, 0, nudge)
+        st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
     if rotate:
         st.session_state.manual_layout_draft, ok, msg = rotate_part_90(layout, selected_sheet_idx, selected_part_id)
-        (st.success if ok else st.error)(msg)
+        st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
 
     d1, d2 = st.columns(2)
     if d1.button("Apply to Nest", type="primary"):
         st.session_state.manual_layout = copy.deepcopy(st.session_state.manual_layout_draft)
         st.session_state.show_manual_tuning = False
-        st.session_state.manual_part_select = None
         st.success("Manual tuning applied to current nest.")
         st.rerun()
     if d2.button("Cancel"):
         st.session_state.show_manual_tuning = False
         st.session_state.manual_layout_draft = None
-        st.session_state.manual_part_select = None
+        if "manual_part_select" in st.session_state:
+            del st.session_state["manual_part_select"]
         st.rerun()
 
 

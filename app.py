@@ -30,6 +30,19 @@ if 'manual_layout' not in st.session_state:
     st.session_state.manual_layout = None
 
 
+def apply_pending_loaded_nest():
+    pending = st.session_state.pop("pending_loaded_nest", None)
+    if pending is None:
+        return
+
+    st.session_state.sheet_w = pending["sheet_w"]
+    st.session_state.sheet_h = pending["sheet_h"]
+    st.session_state.kerf = pending["kerf"]
+    st.session_state.margin = pending["margin"]
+    st.session_state["panels"] = pending["panels"]
+    st.session_state["loaded_nest_name"] = pending["nest_name"]
+
+
 # --- HELPERS ---
 def add_panel(w, l, q, label, grain, mat):
     st.session_state['panels'].append({
@@ -80,6 +93,8 @@ def update_sheet_dims():
         st.session_state.sheet_w = 3050.0
         st.session_state.sheet_h = 1220.0
 
+
+apply_pending_loaded_nest()
 
 # --- SIDEBAR ---
 st.sidebar.header("⚙️ Machine Settings")
@@ -165,6 +180,10 @@ with col1:
     st.markdown("### Save / Load Nest")
     nest_name = st.text_input("Nest Name", value="My Nest")
 
+    loaded_nest_name = st.session_state.pop("loaded_nest_name", None)
+    if loaded_nest_name:
+        st.success(f"Loaded nest: {loaded_nest_name}")
+
     save_payload = build_nest_payload(nest_name, SHEET_W, SHEET_H, MARGIN, KERF, st.session_state['panels'])
     st.download_button(
         "💾 Save Nest",
@@ -179,12 +198,7 @@ with col1:
         try:
             payload = dxf_to_payload(uploaded_nest.read())
             loaded = parse_nest_payload(payload)
-            st.session_state.sheet_w = loaded["sheet_w"]
-            st.session_state.sheet_h = loaded["sheet_h"]
-            st.session_state.kerf = loaded["kerf"]
-            st.session_state.margin = loaded["margin"]
-            st.session_state["panels"] = loaded["panels"]
-            st.success(f"Loaded nest: {loaded['nest_name']}")
+            st.session_state["pending_loaded_nest"] = loaded
             st.rerun()
         except Exception as e:
             st.error(f"Failed to load nest file: {e}")

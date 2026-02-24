@@ -14,7 +14,7 @@ from streamlit_gsheets import GSheetsConnection
 
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
 from nest_storage import build_nest_payload, dxf_to_payload, parse_nest_payload, payload_to_dxf
-from nesting_engine import run_smart_nesting
+from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 
 # --- PAGE CONFIG ---
@@ -31,6 +31,8 @@ if 'kerf' not in st.session_state:
     st.session_state.kerf = 6.0
 if 'margin' not in st.session_state:
     st.session_state.margin = 10.0
+if 'machine_type' not in st.session_state:
+    st.session_state.machine_type = 'Flat Bed'
 if 'manual_layout' not in st.session_state:
     st.session_state.manual_layout = None
 if 'manual_layout_draft' not in st.session_state:
@@ -58,6 +60,7 @@ def apply_pending_loaded_nest():
     st.session_state.margin = pending["margin"]
     st.session_state["panels"] = pending["panels"]
     st.session_state["loaded_nest_name"] = pending["nest_name"]
+    st.session_state.machine_type = pending.get("machine_type", "Flat Bed")
     st.session_state.manual_layout = pending.get("manual_layout")
     st.session_state.manual_layout_draft = None
 
@@ -353,6 +356,7 @@ apply_pending_loaded_nest()
 
 # --- SIDEBAR ---
 st.sidebar.header("⚙️ Machine Settings")
+MACHINE_TYPE = st.sidebar.selectbox("Machine Type", ["Flat Bed", "Selco"], key="machine_type")
 st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset", on_change=update_sheet_dims)
 SHEET_W = st.sidebar.number_input("Sheet Width", key="sheet_w", step=10.0)
 SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
@@ -375,6 +379,7 @@ with menu_col2:
         KERF,
         st.session_state['panels'],
         st.session_state.manual_layout,
+        MACHINE_TYPE,
     )
     st.download_button(
         "💾 Save Nest",
@@ -547,7 +552,10 @@ with col2:
         if not st.session_state['panels']:
             st.warning("Empty.")
         else:
-            packer = run_smart_nesting(st.session_state['panels'], SHEET_W, SHEET_H, MARGIN, KERF)
+            if MACHINE_TYPE == "Selco":
+                packer = run_selco_nesting(st.session_state['panels'], SHEET_W, SHEET_H, MARGIN, KERF)
+            else:
+                packer = run_smart_nesting(st.session_state['panels'], SHEET_W, SHEET_H, MARGIN, KERF)
             st.session_state.last_packer = packer
 
             total_input = sum(p['Qty'] for p in st.session_state['panels'])
@@ -570,18 +578,21 @@ with col2:
         st.write("---")
         st.markdown("### 3. Nested Result")
 
-        action_col1, action_col2 = st.columns([1, 2])
-        with action_col1:
-            if st.button("Manual Nesting Tuning"):
-                if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
-                    st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
-                    first_sheet_parts = st.session_state.manual_layout_draft["sheets"][0]["parts"]
-                    st.session_state.manual_selected_part_id = first_sheet_parts[0]["id"] if first_sheet_parts else None
-                    st.session_state.manual_part_select = st.session_state.manual_selected_part_id
-                    st.session_state.show_manual_tuning = True
-                    st.rerun()
-        with action_col2:
-            st.caption("Manual tuning opens in a popup. Click 'Apply to Nest' to commit your changes.")
+        if MACHINE_TYPE == "Flat Bed":
+            action_col1, action_col2 = st.columns([1, 2])
+            with action_col1:
+                if st.button("Manual Nesting Tuning"):
+                    if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
+                        st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
+                        first_sheet_parts = st.session_state.manual_layout_draft["sheets"][0]["parts"]
+                        st.session_state.manual_selected_part_id = first_sheet_parts[0]["id"] if first_sheet_parts else None
+                        st.session_state.manual_part_select = st.session_state.manual_selected_part_id
+                        st.session_state.show_manual_tuning = True
+                        st.rerun()
+            with action_col2:
+                st.caption("Manual tuning opens in a popup. Click 'Apply to Nest' to commit your changes.")
+        else:
+            st.caption("Selco mode: sheet preview only (manual tuning is disabled).")
 
         sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in st.session_state.manual_layout["sheets"]]
         preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices)

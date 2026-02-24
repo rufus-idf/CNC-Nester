@@ -11,6 +11,7 @@ from streamlit_gsheets import GSheetsConnection
 from nesting_engine import run_smart_nesting
 from panel_utils import normalize_panels
 from nest_storage import build_nest_payload, parse_nest_payload, payload_to_json
+from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -26,6 +27,8 @@ if 'kerf' not in st.session_state:
     st.session_state.kerf = 6.0
 if 'margin' not in st.session_state:
     st.session_state.margin = 10.0
+if 'manual_layout' not in st.session_state:
+    st.session_state.manual_layout = None
 
 
 # --- HELPERS ---
@@ -269,6 +272,8 @@ with col2:
             else:
                 st.success(f"Success! All {total_packed} panels nested on {len(packer)} Sheets.")
 
+            st.session_state.manual_layout = initialize_layout_from_packer(packer, MARGIN, KERF, SHEET_W, SHEET_H)
+
             dxf = create_dxf_zip(packer, SHEET_W, SHEET_H, MARGIN, KERF)
             st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary")
 
@@ -292,3 +297,62 @@ with col2:
                         ax.add_patch(patches.Rectangle((x, y), w, h, fc=fc, ec='#222'))
                         ax.text(x + w / 2, y + h / 2, f"{r.rid}\n{int(w)}x{int(h)}", ha='center', va='center', fontsize=8 if w > 100 else 6, color='white' if fc == '#8b4513' else 'black')
                     st.pyplot(fig)
+
+    if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
+        st.write("---")
+        st.markdown("### 3. Manual Nest Tuning (Move + 90° Rotate)")
+        st.caption("This respects margin and kerf clearance. Parts cannot overlap or break edge clearances.")
+
+        layout = st.session_state.manual_layout
+        sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in layout["sheets"]]
+        selected_sheet_label = st.selectbox("Manual Sheet", sheet_choices)
+        selected_sheet_idx = sheet_choices.index(selected_sheet_label)
+        selected_sheet = layout["sheets"][selected_sheet_idx]
+
+        part_choices = [f"{p['id']} | {p['rid']} ({int(p['w'])}x{int(p['h'])})" for p in selected_sheet["parts"]]
+        selected_part_label = st.selectbox("Part to move/rotate", part_choices)
+        selected_part_id = selected_part_label.split(" | ")[0]
+
+        nudge = st.number_input("Move step (mm)", min_value=1.0, value=10.0, step=1.0)
+        c1, c2, c3, c4, c5 = st.columns(5)
+        move_up = c1.button("⬆️ Up")
+        move_left = c2.button("⬅️ Left")
+        move_right = c3.button("➡️ Right")
+        move_down = c4.button("⬇️ Down")
+        rotate = c5.button("🔄 Rotate 90°")
+
+        if move_up:
+            st.session_state.manual_layout, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, 0, nudge)
+            (st.success if ok else st.error)(msg)
+            st.rerun()
+        if move_left:
+            st.session_state.manual_layout, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, -nudge, 0)
+            (st.success if ok else st.error)(msg)
+            st.rerun()
+        if move_right:
+            st.session_state.manual_layout, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, nudge, 0)
+            (st.success if ok else st.error)(msg)
+            st.rerun()
+        if move_down:
+            st.session_state.manual_layout, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, 0, -nudge)
+            (st.success if ok else st.error)(msg)
+            st.rerun()
+        if rotate:
+            st.session_state.manual_layout, ok, msg = rotate_part_90(layout, selected_sheet_idx, selected_part_id)
+            (st.success if ok else st.error)(msg)
+            st.rerun()
+
+        fig2, ax2 = plt.subplots(figsize=(10, 6))
+        ax2.set_xlim(0, layout["sheet_w"])
+        ax2.set_ylim(0, layout["sheet_h"])
+        ax2.set_aspect('equal')
+        ax2.axis('off')
+        ax2.add_patch(patches.Rectangle((0, 0), layout["sheet_w"], layout["sheet_h"], fc='#eef5ff', ec='#333'))
+        ax2.add_patch(patches.Rectangle((layout["margin"], layout["margin"]), layout["sheet_w"] - 2 * layout["margin"], layout["sheet_h"] - 2 * layout["margin"], ec='red', ls='--', fc='none'))
+
+        for part in selected_sheet["parts"]:
+            fc = '#5a7' if part.get('rotated') else '#6fa8dc'
+            ax2.add_patch(patches.Rectangle((part["x"], part["y"]), part["w"], part["h"], fc=fc, ec='#222'))
+            ax2.text(part["x"] + part["w"] / 2, part["y"] + part["h"] / 2, f"{part['rid']}\n{int(part['w'])}x{int(part['h'])}", ha='center', va='center', fontsize=7)
+        st.pyplot(fig2)
+

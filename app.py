@@ -5,6 +5,7 @@ import io
 import zipfile
 
 import ezdxf
+import altair as alt
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -130,51 +131,53 @@ def draw_layout_sheet(layout, selected_sheet_idx):
 
 def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
     selected_sheet = layout["sheets"][selected_sheet_idx]
-    clicked = st.query_params.get("manual_part")
-    if clicked:
-        del st.query_params["manual_part"]
-
-    svg_parts = [
-        f'<svg viewBox="0 0 {layout["sheet_w"]} {layout["sheet_h"]}" width="100%" style="background:#eef5ff;border:1px solid #333;max-height:72vh;">',
-        (
-            f'<rect x="{layout["margin"]}" y="{layout["margin"]}" '
-            f'width="{layout["sheet_w"] - 2 * layout["margin"]}" '
-            f'height="{layout["sheet_h"] - 2 * layout["margin"]}" '
-            'fill="none" stroke="red" stroke-dasharray="20,12" stroke-width="3"/>'
-        ),
-    ]
-
+    rows = []
     for part in selected_sheet["parts"]:
-        is_selected = part["id"] == selected_part_id
-        fill = '#2e7d32' if part.get('rotated') else '#4a90e2'
-        if is_selected:
-            fill = '#f39c12'
+        rows.append({
+            "part_id": part["id"],
+            "label": part["rid"],
+            "x": part["x"],
+            "x2": part["x"] + part["w"],
+            "y": part["y"],
+            "y2": part["y"] + part["h"],
+            "dims": f"{int(part['w'])}x{int(part['h'])}",
+            "display_color": "#f39c12" if part["id"] == selected_part_id else ("#2e7d32" if part.get("rotated") else "#4a90e2"),
+        })
 
-        center_x = part["x"] + part["w"] / 2
-        center_y = part["y"] + part["h"] / 2
-        text = f"{part['rid']} ({int(part['w'])}x{int(part['h'])})"
-        svg_parts.append(
-            (
-                f'<a href="?manual_part={part["id"]}">'
-                f'<rect x="{part["x"]}" y="{part["y"]}" width="{part["w"]}" height="{part["h"]}" '
-                f'fill="{fill}" stroke="#222" stroke-width="{4 if is_selected else 1}" style="cursor:pointer"/>'
-                f'<title>{text}</title>'
-                '</a>'
-            )
-        )
-        svg_parts.append(
-            (
-                f'<text x="{center_x}" y="{center_y}" text-anchor="middle" dominant-baseline="middle" '
-                'font-size="20" fill="#111" style="pointer-events:none">'
-                f'{part["rid"]}</text>'
-            )
-        )
+    parts_df = pd.DataFrame(rows)
+    selector = alt.selection_point(fields=["part_id"], name="part_pick")
 
-    svg_parts.append('</svg>')
-    st.markdown("".join(svg_parts), unsafe_allow_html=True)
+    chart = (
+        alt.Chart(parts_df)
+        .mark_rect(stroke="#222")
+        .encode(
+            x=alt.X("x:Q", scale=alt.Scale(domain=[0, layout["sheet_w"]]), axis=None),
+            x2="x2:Q",
+            y=alt.Y("y:Q", scale=alt.Scale(domain=[0, layout["sheet_h"]]), axis=None),
+            y2="y2:Q",
+            color=alt.Color("display_color:N", scale=None, legend=None),
+            strokeWidth=alt.condition(selector, alt.value(4), alt.value(1)),
+            tooltip=["label:N", "dims:N", "part_id:N"],
+        )
+        .add_params(selector)
+        .properties(height=760)
+    )
+
+    event = st.altair_chart(chart, width="stretch", on_select="rerun", selection_mode="part_pick")
+
     st.caption("Tip: click any panel in the diagram to select it for nudging/rotation.")
 
-    return clicked
+    selected = None
+    if isinstance(event, dict):
+        selection = event.get("selection", {})
+        picked = selection.get("part_pick", [])
+        if isinstance(picked, list) and picked:
+            selected = picked[0].get("part_id")
+        elif isinstance(picked, dict):
+            ids = picked.get("part_id")
+            if isinstance(ids, list) and ids:
+                selected = ids[0]
+    return selected
 
 
 @st.dialog("Manual Nesting Tuning", width="large")
@@ -183,10 +186,8 @@ def manual_tuning_dialog():
         """
         <style>
         div[role="dialog"] > div {
-            width: min(98vw, 1800px) !important;
-        }
-        div[role="dialog"] section.main {
-            max-height: 92vh !important;
+            width: 95vw !important;
+            max-width: 95vw !important;
         }
         </style>
         """,
@@ -195,7 +196,8 @@ def manual_tuning_dialog():
 
     layout = st.session_state.manual_layout_draft
     if not layout or not layout.get("sheets"):
-        st.info("Run smart nesting first.")
+        st.session_state.show_manual_tuning = False
+        st.session_state.manual_layout_draft = None
         return
 
     sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in layout["sheets"]]
@@ -488,9 +490,12 @@ with col2:
         action_col1, action_col2 = st.columns([1, 2])
         with action_col1:
             if st.button("Manual Nesting Tuning"):
-                st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
-                st.session_state.show_manual_tuning = True
-                st.rerun()
+                if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
+                    st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
+                    first_sheet_parts = st.session_state.manual_layout_draft["sheets"][0]["parts"]
+                    st.session_state.manual_selected_part_id = first_sheet_parts[0]["id"] if first_sheet_parts else None
+                    st.session_state.show_manual_tuning = True
+                    st.rerun()
         with action_col2:
             st.caption("Manual tuning opens in a popup. Click 'Apply to Nest' to commit your changes.")
 
@@ -499,5 +504,5 @@ with col2:
         preview_sheet_idx = sheet_choices.index(preview_sheet_label)
         draw_layout_sheet(st.session_state.manual_layout, preview_sheet_idx)
 
-if st.session_state.show_manual_tuning:
+if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()

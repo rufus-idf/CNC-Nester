@@ -8,6 +8,7 @@ import zipfile
 import ezdxf
 from streamlit_gsheets import GSheetsConnection
 from nesting_engine import run_smart_nesting
+from panel_utils import normalize_panels
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -31,14 +32,6 @@ def clear_data():
     st.session_state['panels'] = []
     if 'panels_editor' in st.session_state:
         del st.session_state['panels_editor']
-
-def normalize_panels(panels):
-    normalized = []
-    for p in panels:
-        row = dict(p)
-        row["Grain?"] = bool(row.get("Grain?", False))
-        normalized.append(row)
-    return normalized
 
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
     zip_buffer = io.BytesIO()

@@ -237,8 +237,12 @@ def manual_tuning_dialog():
         """
         <style>
         div[role="dialog"] > div {
-            width: min(92vw, 1500px) !important;
-            max-width: min(92vw, 1500px) !important;
+            width: 100vw !important;
+            max-width: 100vw !important;
+            height: 100vh !important;
+            max-height: 100vh !important;
+            margin: 0 !important;
+            border-radius: 0 !important;
         }
         div[role="dialog"] {
             overflow: auto !important;

@@ -1,6 +1,6 @@
 import unittest
 
-from nesting_engine import run_smart_nesting
+from nesting_engine import run_selco_nesting, run_smart_nesting
 
 
 class NestingEngineTests(unittest.TestCase):
@@ -19,6 +19,17 @@ class NestingEngineTests(unittest.TestCase):
         self.assertEqual(len(packer.rect_list()), 10)
         self.assertEqual(len(packer), 1)
 
+
+    def test_selco_mode_can_pack_simple_case(self):
+        panels = [
+            {"Label": "Panel A", "Width": 500, "Length": 700, "Qty": 2, "Grain?": False, "Material": "MDF"},
+            {"Label": "Panel B", "Width": 300, "Length": 800, "Qty": 2, "Grain?": True, "Material": "MDF"},
+        ]
+
+        packer = run_selco_nesting(panels, sheet_w=2440, sheet_h=1220, margin=10, kerf=6)
+
+        self.assertIsNotNone(packer)
+        self.assertEqual(len(packer.rect_list()), 4)
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,11 +5,11 @@ from datetime import datetime
 
 import ezdxf
 
-from nesting_engine import run_smart_nesting
+from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 
 
-def build_nest_payload(nest_name, sheet_w, sheet_h, margin, kerf, panels, manual_layout=None):
+def build_nest_payload(nest_name, sheet_w, sheet_h, margin, kerf, panels, manual_layout=None, machine_type="Flat Bed"):
     normalized_panels = normalize_panels(panels)
     payload = {
         "version": 1,
@@ -20,6 +20,7 @@ def build_nest_payload(nest_name, sheet_w, sheet_h, margin, kerf, panels, manual
             "sheet_h": float(sheet_h),
             "margin": float(margin),
             "kerf": float(kerf),
+            "machine_type": str(machine_type),
         },
         "panels": normalized_panels,
         "packed_sheets": [],
@@ -28,7 +29,10 @@ def build_nest_payload(nest_name, sheet_w, sheet_h, margin, kerf, panels, manual
     if manual_layout and manual_layout.get("sheets"):
         payload["packed_sheets"] = manual_layout.get("sheets", [])
     else:
-        packer = run_smart_nesting(normalized_panels, sheet_w, sheet_h, margin, kerf)
+        if machine_type == "Selco":
+            packer = run_selco_nesting(normalized_panels, sheet_w, sheet_h, margin, kerf)
+        else:
+            packer = run_smart_nesting(normalized_panels, sheet_w, sheet_h, margin, kerf)
         if packer:
             for sheet_index, bin in enumerate(packer):
                 rects = []
@@ -68,6 +72,7 @@ def parse_nest_payload(payload):
         "panels": normalize_panels(payload.get("panels", [])),
         "nest_name": str(payload.get("nest_name", "Untitled")),
         "manual_layout": manual_layout,
+        "machine_type": str(settings.get("machine_type", "Flat Bed")),
     }
 
 
@@ -153,6 +158,7 @@ def _payload_from_dxf_geometry(dxf_bytes):
             "sheet_h": float(sheet_h),
             "margin": 0.0,
             "kerf": 0.0,
+            "machine_type": "Flat Bed",
         },
         "panels": normalize_panels(panels),
         "packed_sheets": [],

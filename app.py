@@ -20,6 +20,8 @@ if 'sheet_w' not in st.session_state:
     st.session_state.sheet_w = 2440.0
 if 'sheet_h' not in st.session_state:
     st.session_state.sheet_h = 1220.0
+if 'panels_table_dirty' not in st.session_state:
+    st.session_state.panels_table_dirty = True
 
 # --- HELPERS ---
 def add_panel(w, l, q, label, grain, mat):
@@ -27,11 +29,26 @@ def add_panel(w, l, q, label, grain, mat):
         "Label": label, "Width": w, "Length": l, "Qty": q, 
         "Grain?": grain, "Material": mat
     })
+    mark_panels_table_dirty()
 
 def clear_data():
     st.session_state['panels'] = []
     if 'panels_editor' in st.session_state:
         del st.session_state['panels_editor']
+    if 'panels_table' in st.session_state:
+        del st.session_state['panels_table']
+    mark_panels_table_dirty()
+
+
+def mark_panels_table_dirty():
+    st.session_state["panels_table_dirty"] = True
+
+
+def sync_panels_table_from_list(force=False):
+    if force or st.session_state.get("panels_table_dirty", True) or ("panels_table" not in st.session_state):
+        st.session_state["panels_table"] = pd.DataFrame(normalize_panels(st.session_state["panels"]))
+        st.session_state["panels_table_dirty"] = False
+
 
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
     zip_buffer = io.BytesIO()
@@ -144,16 +161,23 @@ with col1:
 
     if st.session_state['panels']:
         st.write("---")
-        st.session_state['panels'] = normalize_panels(st.session_state['panels'])
-        # Recover from invalid persisted widget state (e.g. list from older app versions)
-        if 'panels_editor' in st.session_state and not isinstance(st.session_state['panels_editor'], dict):
-            del st.session_state['panels_editor']
-        df_ed = pd.DataFrame(st.session_state['panels'])
-        edited = st.data_editor(df_ed, width="stretch", num_rows="dynamic", hide_index=True,
-                                column_config={"Grain?": st.column_config.CheckboxColumn("Grain?", default=False)},
-                                key="panels_editor")
+        sync_panels_table_from_list()
+
+        edited = st.data_editor(
+            st.session_state["panels_table"],
+            width="stretch",
+            num_rows="dynamic",
+            hide_index=True,
+            column_config={"Grain?": st.column_config.CheckboxColumn("Grain?", default=False)},
+            key="panels_editor"
+        )
+
+        st.session_state["panels_table"] = edited
         st.session_state['panels'] = normalize_panels(edited.to_dict('records'))
-        if st.button("🗑️ Clear"): clear_data(); st.rerun()
+
+        if st.button("🗑️ Clear"):
+            clear_data()
+            st.rerun()
 
 with col2:
     st.subheader("2. Result")

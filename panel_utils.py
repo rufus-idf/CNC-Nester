@@ -1,6 +1,35 @@
+import json
+
 TRUTHY_VALUES = {"1", "true", "t", "yes", "y", "on"}
 FALSY_VALUES = {"0", "false", "f", "no", "n", "off", ""}
 
+
+
+
+def parse_tooling_json_cell(raw_value):
+    if raw_value is None:
+        return None
+
+    text = str(raw_value).strip()
+    if not text or text.lower() == "nan":
+        return None
+
+    candidates = [text]
+    if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+        inner = text[1:-1]
+        candidates.append(inner)
+        candidates.append(inner.replace('""', '"'))
+    candidates.append(text.replace('""', '"'))
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise ValueError("Invalid Tooling JSON")
 
 def coerce_bool(value):
     """Safely coerce mixed UI/import values to bool without bool('False') bugs."""
@@ -43,14 +72,17 @@ def normalize_panels(panels):
         row["Qty"] = max(1, _coerce_int(row.get("Qty", 1), default=1))
         row["Grain?"] = coerce_bool(row.get("Grain?", False))
         row["Material"] = str(row.get("Material", "Manual"))
-        normalized.append({
+        normalized_row = {
             "Label": row["Label"],
             "Width": row["Width"],
             "Length": row["Length"],
             "Qty": row["Qty"],
             "Grain?": row["Grain?"],
             "Material": row["Material"],
-        })
+        }
+        if "Tooling" in row and row["Tooling"] is not None:
+            normalized_row["Tooling"] = row["Tooling"]
+        normalized.append(normalized_row)
     return normalized
 
 

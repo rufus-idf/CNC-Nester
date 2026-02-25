@@ -1,6 +1,6 @@
 import unittest
 
-from panel_utils import coerce_bool, normalize_panels, panels_to_editor_rows, apply_editor_rows
+from panel_utils import coerce_bool, normalize_panels, panels_to_editor_rows, apply_editor_rows, parse_tooling_json_cell
 
 
 class PanelUtilsTests(unittest.TestCase):
@@ -24,6 +24,31 @@ class PanelUtilsTests(unittest.TestCase):
         ]
         normalized = normalize_panels(panels)
         self.assertEqual([p["Grain?"] for p in normalized], [False, True, False, True, False])
+
+
+
+    def test_normalize_panels_preserves_tooling_payload(self):
+        panels = [{
+            "Label": "Machined",
+            "Width": 1000,
+            "Length": 500,
+            "Qty": 1,
+            "Grain?": False,
+            "Material": "MDF",
+            "Tooling": {"coord_mode": "normalized", "toolpath_segments": []},
+        }]
+        normalized = normalize_panels(panels)
+        self.assertIn("Tooling", normalized[0])
+        self.assertEqual(normalized[0]["Tooling"]["coord_mode"], "normalized")
+
+
+
+    def test_parse_tooling_json_cell_handles_sheet_wrapped_escaped_json(self):
+        raw = '"{\n  ""panel_thickness"": 18,\n  ""borings"": [{""x"": 0.5, ""y"": 0.5}]\n}"'
+        parsed = parse_tooling_json_cell(raw)
+        self.assertIsInstance(parsed, dict)
+        self.assertEqual(parsed["panel_thickness"], 18)
+        self.assertEqual(parsed["borings"][0]["x"], 0.5)
 
     def test_apply_editor_rows_swaps_length_and_width_when_requested(self):
         rows = panels_to_editor_rows([

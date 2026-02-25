@@ -331,10 +331,25 @@ def _transform_template_value(value, template_size, target_size):
     return value_f * (target_size / template_size)
 
 
-def _build_cix_program(panel_w, panel_h, panel_t, label, template_preview=None):
+def _map_template_point_to_sheet(x, y, part, template_w, template_h):
+    part_w = _safe_float(part.get("w"), 0.0)
+    part_h = _safe_float(part.get("h"), 0.0)
+    part_x = _safe_float(part.get("x"), 0.0)
+    part_y = _safe_float(part.get("y"), 0.0)
+
+    sx = _transform_template_value(x, template_w, part_w)
+    sy = _transform_template_value(y, template_h, part_h)
+
+    if part.get("rotated"):
+        # 90° rotation mapping for preview/manual-layout rotated parts.
+        return part_x + (part_w - sy), part_y + sx
+    return part_x + sx, part_y + sy
+
+
+def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=None):
     template_preview = template_preview or {}
-    template_w = _safe_float(template_preview.get("panel_width"), panel_w)
-    template_h = _safe_float(template_preview.get("panel_length"), panel_h)
+    template_w = _safe_float(template_preview.get("panel_width"), 0.0)
+    template_h = _safe_float(template_preview.get("panel_length"), 0.0)
 
     program_lines = [
         "BEGIN ID CID3",
@@ -342,8 +357,8 @@ def _build_cix_program(panel_w, panel_h, panel_t, label, template_preview=None):
         "END ID",
         "",
         "BEGIN MAINDATA",
-        f"	LPX={_format_cix_value(panel_w)}",
-        f"	LPY={_format_cix_value(panel_h)}",
+        f"	LPX={_format_cix_value(sheet_w)}",
+        f"	LPY={_format_cix_value(sheet_h)}",
         f"	LPZ={_format_cix_value(panel_t)}",
         '	ORLST="9"',
         "	SIMMETRY=0",
@@ -354,50 +369,90 @@ def _build_cix_program(panel_w, panel_h, panel_t, label, template_preview=None):
         "",
     ]
 
-    # Outer contour path (rectangle)
-    program_lines.append(_cix_macro("GEO", {"LAY": "Layer 0", "ID": "G1001", "SIDE": 0, "CRN": "2", "RTY": 2}))
-    program_lines.append("")
-    program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer 0", "X": 0, "Y": panel_h}))
-    program_lines.append("")
-    for idx, (xe, ye) in enumerate([(0, 0), (panel_w, 0), (panel_w, panel_h), (0, panel_h)]):
-        program_lines.append(_cix_macro("LINE_EP", {"LAY": "Layer 0", "ID": 100 + idx, "XE": xe, "YE": ye, "ZS": 0, "ZE": 0, "FD": 0, "SP": 0, "MVT": 0}))
-        program_lines.append("")
-    program_lines.append(_cix_macro("ENDPATH", {}))
-    program_lines.append("")
+    for part_idx, part in enumerate(parts, start=1):
+        part_w = _safe_float(part.get("w"), 0.0)
+        part_h = _safe_float(part.get("h"), 0.0)
+        if part_w <= 0 or part_h <= 0:
+            continue
 
-    # Apply template boring operations to this panel by size-relative mapping
-    for i, boring in enumerate(template_preview.get("borings", []), start=1):
-        x = _transform_template_value(boring.get("x", 0), template_w, panel_w)
-        y = _transform_template_value(boring.get("y", 0), template_h, panel_h)
-        depth = _safe_float(boring.get("depth", 0.0))
-        tool = boring.get("tool") or "DRILL"
-        program_lines.append(_cix_macro("BG", {
-            "LAY": "Layer 1",
-            "ID": f"P{i}",
-            "SIDE": int(_safe_float(boring.get("side", 0))),
-            "CRN": "1",
-            "X": x,
-            "Y": y,
-            "Z": 0,
-            "DP": depth,
-            "TNM": tool,
-            "CKA": 3,
-            "OPT": 1,
-        }))
-        program_lines.append("")
+        part_x = _safe_float(part.get("x"), 0.0)
+        part_y = _safe_float(part.get("y"), 0.0)
+        part_label = str(part.get("rid") or f"Part_{part_idx}")
 
-    # Keep template path entities as an extra machining layer if present
-    for i, seg in enumerate(template_preview.get("toolpath_segments", []), start=1):
-        sx = _transform_template_value(seg.get("x1", 0), template_w, panel_w)
-        sy = _transform_template_value(seg.get("y1", 0), template_h, panel_h)
-        ex = _transform_template_value(seg.get("x2", 0), template_w, panel_w)
-        ey = _transform_template_value(seg.get("y2", 0), template_h, panel_h)
-        program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer TP", "X": sx, "Y": sy}))
+        # Nested part perimeter on the sheet.
+        program_lines.append(_cix_macro("GEO", {"LAY": "Layer 0", "ID": f"G{part_idx}", "SIDE": 0, "CRN": "2", "RTY": 2}))
         program_lines.append("")
-        program_lines.append(_cix_macro("LINE_EP", {"LAY": "Layer TP", "ID": 5000 + i, "XE": ex, "YE": ey, "ZS": 0, "ZE": 0, "FD": 0, "SP": 0, "MVT": 0}))
+        program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer 0", "X": part_x, "Y": part_y + part_h}))
+        program_lines.append("")
+        for seg_idx, (xe, ye) in enumerate([
+            (part_x, part_y),
+            (part_x + part_w, part_y),
+            (part_x + part_w, part_y + part_h),
+            (part_x, part_y + part_h),
+        ]):
+            program_lines.append(_cix_macro("LINE_EP", {
+                "LAY": "Layer 0",
+                "ID": 1000 * part_idx + seg_idx,
+                "XE": xe,
+                "YE": ye,
+                "ZS": 0,
+                "ZE": 0,
+                "FD": 0,
+                "SP": 0,
+                "MVT": 0,
+            }))
+            program_lines.append("")
+        program_lines.append(_cix_macro("ENDPATH", {}))
         program_lines.append("")
 
-    program_lines.append(f"'LABEL={label}'")
+        # Apply template boring operations to each nested part.
+        for boring_idx, boring in enumerate(template_preview.get("borings", []), start=1):
+            bx, by = _map_template_point_to_sheet(
+                boring.get("x", 0),
+                boring.get("y", 0),
+                part,
+                template_w,
+                template_h,
+            )
+            depth = _safe_float(boring.get("depth", 0.0))
+            tool = boring.get("tool") or "DRILL"
+            program_lines.append(_cix_macro("BG", {
+                "LAY": "Layer 1",
+                "ID": f"P{part_idx}_{boring_idx}",
+                "SIDE": int(_safe_float(boring.get("side", 0))),
+                "CRN": "1",
+                "X": bx,
+                "Y": by,
+                "Z": 0,
+                "DP": depth,
+                "TNM": tool,
+                "CKA": 3,
+                "OPT": 1,
+            }))
+            program_lines.append("")
+
+        # Apply template toolpath segments to each nested part.
+        for tp_idx, seg in enumerate(template_preview.get("toolpath_segments", []), start=1):
+            sx, sy = _map_template_point_to_sheet(seg.get("x1", 0), seg.get("y1", 0), part, template_w, template_h)
+            ex, ey = _map_template_point_to_sheet(seg.get("x2", 0), seg.get("y2", 0), part, template_w, template_h)
+            program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer TP", "X": sx, "Y": sy}))
+            program_lines.append("")
+            program_lines.append(_cix_macro("LINE_EP", {
+                "LAY": "Layer TP",
+                "ID": 5000 * part_idx + tp_idx,
+                "XE": ex,
+                "YE": ey,
+                "ZS": 0,
+                "ZE": 0,
+                "FD": 0,
+                "SP": 0,
+                "MVT": 0,
+            }))
+            program_lines.append("")
+
+        program_lines.append(f"'PART_LABEL={part_label}'")
+        program_lines.append("")
+
     return "\n".join(program_lines).strip() + "\n"
 
 
@@ -407,19 +462,16 @@ def create_cix_zip(layout, template_preview=None):
 
     zip_buffer = io.BytesIO()
     thickness = _safe_float((template_preview or {}).get("panel_thickness"), 18.0)
+    sheet_w = _safe_float(layout.get("sheet_w"), 2440.0)
+    sheet_h = _safe_float(layout.get("sheet_h"), 1220.0)
 
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
         for sheet in layout.get("sheets", []):
             sheet_index = int(sheet.get("sheet_index", 0)) + 1
-            for part_idx, part in enumerate(sheet.get("parts", []), start=1):
-                part_w = _safe_float(part.get("w"), 0.0)
-                part_h = _safe_float(part.get("h"), 0.0)
-                if part_w <= 0 or part_h <= 0:
-                    continue
-                rid = str(part.get("rid") or f"Part_{part_idx}")
-                safe_rid = re.sub(r'[^A-Za-z0-9._-]+', '_', rid).strip('_') or f"Part_{part_idx}"
-                cix_text = _build_cix_program(part_w, part_h, thickness, rid, template_preview=template_preview)
-                file_name = f"Sheet_{sheet_index}/{part_idx:03d}_{safe_rid}.cix"
-                zip_file.writestr(file_name, cix_text)
+            parts = sheet.get("parts", [])
+            if not parts:
+                continue
+            cix_text = _build_sheet_cix_program(sheet_w, sheet_h, thickness, parts, template_preview=template_preview)
+            zip_file.writestr(f"Sheet_{sheet_index}.cix", cix_text)
 
     return zip_buffer.getvalue()

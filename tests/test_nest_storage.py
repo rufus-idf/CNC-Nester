@@ -167,14 +167,16 @@ END MACRO
 
 
 
-    def test_create_cix_zip_exports_parts_with_template_operations(self):
+    def test_create_cix_zip_exports_whole_sheet_program_with_nested_parts(self):
         layout = {
+            "sheet_w": 2440.0,
+            "sheet_h": 1220.0,
             "sheets": [
                 {
                     "sheet_index": 0,
                     "parts": [
-                        {"rid": "Door A", "w": 800.0, "h": 500.0},
-                        {"rid": "Door B", "w": 400.0, "h": 250.0},
+                        {"rid": "Door A", "x": 100.0, "y": 200.0, "w": 800.0, "h": 500.0, "rotated": False},
+                        {"rid": "Door B", "x": 1000.0, "y": 300.0, "w": 400.0, "h": 250.0, "rotated": False},
                     ],
                 }
             ]
@@ -191,25 +193,23 @@ END MACRO
 
         with zipfile.ZipFile(io.BytesIO(cix_zip), "r") as zf:
             names = sorted(zf.namelist())
-            self.assertEqual(len(names), 2)
-            self.assertEqual(names[0], "Sheet_1/001_Door_A.cix")
-            self.assertEqual(names[1], "Sheet_1/002_Door_B.cix")
+            self.assertEqual(names, ["Sheet_1.cix"])
+            sheet_program = zf.read("Sheet_1.cix").decode("utf-8")
 
-            first = zf.read(names[0]).decode("utf-8")
-            second = zf.read(names[1]).decode("utf-8")
+        self.assertIn("LPX=2440", sheet_program)
+        self.assertIn("LPY=1220", sheet_program)
 
-        self.assertIn("LPX=800", first)
-        self.assertIn("LPY=500", first)
-        self.assertIn('PARAM,NAME=TNM,VALUE="5MMDRILL"', first)
-        self.assertIn("PARAM,NAME=X,VALUE=50", first)
-        self.assertIn("PARAM,NAME=Y,VALUE=50", first)
+        # Both parts are represented in one sheet program.
+        self.assertIn("'PART_LABEL=Door A'", sheet_program)
+        self.assertIn("'PART_LABEL=Door B'", sheet_program)
 
-        self.assertIn("LPX=400", second)
-        self.assertIn("LPY=250", second)
-        # Template boring should scale 50,50 on 800x500 -> 25,25 on 400x250
-        self.assertIn("PARAM,NAME=X,VALUE=25", second)
-        self.assertIn("PARAM,NAME=Y,VALUE=25", second)
+        # First part boring at (100,200) + (50,50)
+        self.assertIn("PARAM,NAME=X,VALUE=150", sheet_program)
+        self.assertIn("PARAM,NAME=Y,VALUE=250", sheet_program)
 
+        # Second part boring scales 50,50 on 800x500 -> 25,25 then offset (1000,300)
+        self.assertIn("PARAM,NAME=X,VALUE=1025", sheet_program)
+        self.assertIn("PARAM,NAME=Y,VALUE=325", sheet_program)
     def test_dxf_without_payload_raises_error(self):
         dxf_bytes = b"0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nEOF\n"
 

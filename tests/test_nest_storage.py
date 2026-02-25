@@ -1,9 +1,10 @@
 import unittest
 import io
+import zipfile
 
 import ezdxf
 
-from nest_storage import build_nest_payload, parse_nest_payload, payload_to_dxf, dxf_to_payload
+from nest_storage import build_nest_payload, create_cix_zip, parse_nest_payload, payload_to_dxf, dxf_to_payload, cix_to_payload, nest_file_to_payload
 
 
 class NestStorageTests(unittest.TestCase):
@@ -101,6 +102,113 @@ class NestStorageTests(unittest.TestCase):
         self.assertIsNotNone(parsed["manual_layout"])
         self.assertEqual(parsed["manual_layout"]["sheets"][0]["parts"][0]["x"], 100.0)
         self.assertEqual(parsed["manual_layout"]["sheets"][0]["parts"][0]["y"], 120.0)
+
+
+
+    def test_cix_import_loads_panel_dimensions(self):
+        cix_bytes = b"BEGIN MACRO\nPARAM,NAME=LPX,VALUE=\"762\"\nPARAM,NAME=LPY,VALUE=\"508\"\nEND MACRO\n"
+
+        loaded_payload = cix_to_payload(cix_bytes)
+        parsed = parse_nest_payload(loaded_payload)
+
+        self.assertEqual(len(parsed["panels"]), 1)
+        self.assertEqual(parsed["panels"][0]["Width"], 762.0)
+        self.assertEqual(parsed["panels"][0]["Length"], 508.0)
+
+
+
+    def test_cix_import_extracts_borings_and_toolpaths_for_preview(self):
+        cix_bytes = b"""BEGIN MAINDATA
+LPX=800
+LPY=500
+LPZ=18
+END MAINDATA
+
+BEGIN MACRO
+NAME=START_POINT
+PARAM,NAME=X,VALUE=0
+PARAM,NAME=Y,VALUE=500
+END MACRO
+
+BEGIN MACRO
+NAME=LINE_EP
+PARAM,NAME=XE,VALUE=800
+PARAM,NAME=YE,VALUE=500
+END MACRO
+
+BEGIN MACRO
+NAME=BG
+PARAM,NAME=X,VALUE=50
+PARAM,NAME=Y,VALUE=50
+PARAM,NAME=DP,VALUE=14
+PARAM,NAME=TNM,VALUE="5MMDRILL"
+END MACRO
+"""
+
+        payload = cix_to_payload(cix_bytes)
+        parsed = parse_nest_payload(payload)
+
+        self.assertIsNotNone(parsed["cix_preview"])
+        self.assertEqual(parsed["cix_preview"]["panel_width"], 800.0)
+        self.assertEqual(parsed["cix_preview"]["panel_length"], 500.0)
+        self.assertEqual(parsed["cix_preview"]["panel_thickness"], 18.0)
+        self.assertEqual(len(parsed["cix_preview"]["toolpath_segments"]), 1)
+        self.assertEqual(len(parsed["cix_preview"]["borings"]), 1)
+        self.assertEqual(parsed["cix_preview"]["borings"][0]["tool"], "5MMDRILL")
+
+    def test_nest_file_to_payload_routes_cix_by_extension(self):
+        cix_bytes = b"LPX=600\nLPY=300\n"
+
+        loaded_payload = nest_file_to_payload("part.cix", cix_bytes)
+        parsed = parse_nest_payload(loaded_payload)
+
+        self.assertEqual(parsed["panels"][0]["Width"], 600.0)
+        self.assertEqual(parsed["panels"][0]["Length"], 300.0)
+
+
+
+    def test_create_cix_zip_exports_parts_with_template_operations(self):
+        layout = {
+            "sheets": [
+                {
+                    "sheet_index": 0,
+                    "parts": [
+                        {"rid": "Door A", "w": 800.0, "h": 500.0},
+                        {"rid": "Door B", "w": 400.0, "h": 250.0},
+                    ],
+                }
+            ]
+        }
+        template_preview = {
+            "panel_width": 800.0,
+            "panel_length": 500.0,
+            "panel_thickness": 18.0,
+            "borings": [{"x": 50.0, "y": 50.0, "depth": 14.0, "tool": "5MMDRILL", "side": 0}],
+            "toolpath_segments": [{"x1": 0.0, "y1": 500.0, "x2": 800.0, "y2": 500.0}],
+        }
+
+        cix_zip = create_cix_zip(layout, template_preview)
+
+        with zipfile.ZipFile(io.BytesIO(cix_zip), "r") as zf:
+            names = sorted(zf.namelist())
+            self.assertEqual(len(names), 2)
+            self.assertEqual(names[0], "Sheet_1/001_Door_A.cix")
+            self.assertEqual(names[1], "Sheet_1/002_Door_B.cix")
+
+            first = zf.read(names[0]).decode("utf-8")
+            second = zf.read(names[1]).decode("utf-8")
+
+        self.assertIn("LPX=800", first)
+        self.assertIn("LPY=500", first)
+        self.assertIn('PARAM,NAME=TNM,VALUE="5MMDRILL"', first)
+        self.assertIn("PARAM,NAME=X,VALUE=50", first)
+        self.assertIn("PARAM,NAME=Y,VALUE=50", first)
+
+        self.assertIn("LPX=400", second)
+        self.assertIn("LPY=250", second)
+        # Template boring should scale 50,50 on 800x500 -> 25,25 on 400x250
+        self.assertIn("PARAM,NAME=X,VALUE=25", second)
+        self.assertIn("PARAM,NAME=Y,VALUE=25", second)
 
     def test_dxf_without_payload_raises_error(self):
         dxf_bytes = b"0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nEOF\n"

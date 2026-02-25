@@ -306,6 +306,13 @@ def nest_file_to_payload(file_name, file_bytes):
     return dxf_to_payload(file_bytes)
 
 
+
+
+def _sanitize_cix_name(value, fallback="PART"):
+    raw = str(value or "").strip()
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "_", raw).strip("_")
+    return cleaned[:40] or fallback
+
 def _format_cix_value(value):
     if isinstance(value, str):
         return f'"{value}"'
@@ -378,9 +385,10 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
         part_x = _safe_float(part.get("x"), 0.0)
         part_y = _safe_float(part.get("y"), 0.0)
         part_label = str(part.get("rid") or f"Part_{part_idx}")
+        part_name = _sanitize_cix_name(part_label, fallback=f"PART_{part_idx}")
 
-        # Nested part perimeter on the sheet.
-        program_lines.append(_cix_macro("GEO", {"LAY": "Layer 0", "ID": f"G{part_idx}", "SIDE": 0, "CRN": "2", "RTY": 2}))
+        # Nested part perimeter on the sheet (embed the part name in LAY/ID).
+        program_lines.append(_cix_macro("GEO", {"LAY": f"Part_{part_name}", "ID": part_name, "SIDE": 0, "CRN": "2", "RTY": 2}))
         program_lines.append("")
         program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer 0", "X": part_x, "Y": part_y + part_h}))
         program_lines.append("")

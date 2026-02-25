@@ -203,6 +203,12 @@ END MACRO
         self.assertIn("'PART_LABEL=Door A'", sheet_program)
         self.assertIn("'PART_LABEL=Door B'", sheet_program)
 
+        # Part names are embedded in machining macros for CAD visibility.
+        self.assertIn('PARAM,NAME=LAY,VALUE="Part_Door_A"', sheet_program)
+        self.assertIn('PARAM,NAME=ID,VALUE="Door_A"', sheet_program)
+        self.assertIn('PARAM,NAME=LAY,VALUE="Part_Door_B"', sheet_program)
+        self.assertIn('PARAM,NAME=ID,VALUE="Door_B"', sheet_program)
+
         # First part boring at (100,200) + (50,50)
         self.assertIn("PARAM,NAME=X,VALUE=150", sheet_program)
         self.assertIn("PARAM,NAME=Y,VALUE=250", sheet_program)

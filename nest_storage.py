@@ -417,6 +417,40 @@ def _append_routing_macros(program_lines, part_idx, part_name, geo_id, tool_name
     program_lines.append("")
 
 
+
+
+def build_sheet_boring_points(parts, panel_tooling_by_label=None, template_preview=None):
+    panel_tooling_by_label = panel_tooling_by_label or {}
+    template_preview = template_preview or {}
+    points = []
+
+    for part in parts or []:
+        part_w = _safe_float(part.get("w"), 0.0)
+        part_h = _safe_float(part.get("h"), 0.0)
+        if part_w <= 0 or part_h <= 0:
+            continue
+
+        active_preview = _get_part_tooling_preview(part, template_preview, panel_tooling_by_label)
+        template_w, template_h = _get_template_sizes_for_part(active_preview, part_w, part_h)
+
+        for boring in active_preview.get("borings", []):
+            bx, by = _map_template_point_to_sheet(
+                boring.get("x", 0),
+                boring.get("y", 0),
+                part,
+                template_w,
+                template_h,
+            )
+            points.append({
+                "x": bx,
+                "y": by,
+                "tool": boring.get("tool", ""),
+                "label": str(part.get("rid") or "Part"),
+            })
+
+    return points
+
+
 def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=None, panel_tooling_by_label=None):
     template_preview = template_preview or {}
     panel_tooling_by_label = panel_tooling_by_label or {}

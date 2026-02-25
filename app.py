@@ -14,7 +14,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
-from nest_storage import build_nest_payload, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
+from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 
@@ -70,6 +70,17 @@ def apply_pending_loaded_nest():
 
 
 # --- HELPERS ---
+
+
+def panel_tooling_map(panels):
+    tooling_map = {}
+    for panel in normalize_panels(panels or []):
+        tooling = panel.get("Tooling")
+        if isinstance(tooling, dict):
+            tooling_map[str(panel.get("Label", ""))] = tooling
+    return tooling_map
+
+
 def add_panel(w, l, q, label, grain, mat, tooling=None):
     row = {
         "Label": label, "Width": w, "Length": l, "Qty": q,
@@ -127,7 +138,7 @@ def update_sheet_dims():
         st.session_state.sheet_h = 1220.0
 
 
-def draw_layout_sheet(layout, selected_sheet_idx):
+def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.set_xlim(0, layout["sheet_w"])
@@ -141,6 +152,12 @@ def draw_layout_sheet(layout, selected_sheet_idx):
         fc = '#5a7' if part.get('rotated') else '#6fa8dc'
         ax.add_patch(patches.Rectangle((part["x"], part["y"]), part["w"], part["h"], fc=fc, ec='#222'))
         ax.text(part["x"] + part["w"] / 2, part["y"] + part["h"] / 2, f"{part['rid']}\n{int(part['w'])}x{int(part['h'])}", ha='center', va='center', fontsize=7)
+
+    boring_points = build_sheet_boring_points(selected_sheet.get("parts", []), tooling_map, template_preview)
+    if boring_points:
+        ax.scatter([p["x"] for p in boring_points], [p["y"] for p in boring_points], c='#d32f2f', s=28, marker='o', edgecolors='white', linewidths=0.6, zorder=4)
+        ax.text(layout["margin"], layout["sheet_h"] - layout["margin"] - 25, f"Borings: {len(boring_points)}", color='#b71c1c', fontsize=8, ha='left', va='top')
+
     st.pyplot(fig)
 
 
@@ -655,7 +672,7 @@ with col2:
             preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices, key="preview_sheet_select")
             preview_sheet_idx = sheet_choices.index(preview_sheet_label)
             actual_sheet_idx = preview_sheets[preview_sheet_idx][0]
-            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx)
+            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx, panel_tooling_map(st.session_state["panels"]), st.session_state.cix_preview)
 
         if MACHINE_TYPE == "Flat Bed":
             action_col1, action_col2 = st.columns([1, 2])

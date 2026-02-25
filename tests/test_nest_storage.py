@@ -4,7 +4,7 @@ import zipfile
 
 import ezdxf
 
-from nest_storage import build_nest_payload, create_cix_zip, parse_nest_payload, payload_to_dxf, dxf_to_payload, cix_to_payload, nest_file_to_payload
+from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, parse_nest_payload, payload_to_dxf, dxf_to_payload, cix_to_payload, nest_file_to_payload
 
 
 class NestStorageTests(unittest.TestCase):
@@ -166,6 +166,29 @@ END MACRO
         self.assertEqual(parsed["panels"][0]["Length"], 300.0)
 
 
+
+
+
+    def test_build_sheet_boring_points_maps_borings_to_nested_part_positions(self):
+        parts = [
+            {"rid": "Bed Ends", "x": 100.0, "y": 200.0, "w": 400.0, "h": 250.0, "rotated": False},
+            {"rid": "Other", "x": 600.0, "y": 200.0, "w": 300.0, "h": 300.0, "rotated": False},
+        ]
+        tooling_map = {
+            "Bed Ends": {
+                "coord_mode": "normalized",
+                "borings": [
+                    {"x": 0.25, "y": 0.5, "tool": "5MMDRILL"},
+                ],
+            }
+        }
+
+        points = build_sheet_boring_points(parts, tooling_map, template_preview={})
+
+        self.assertEqual(len(points), 1)
+        self.assertEqual(points[0]["label"], "Bed Ends")
+        self.assertAlmostEqual(points[0]["x"], 200.0)  # 100 + (0.25 * 400)
+        self.assertAlmostEqual(points[0]["y"], 325.0)  # 200 + (0.5 * 250)
 
     def test_create_cix_zip_exports_whole_sheet_program_with_nested_parts(self):
         layout = {

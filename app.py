@@ -16,7 +16,7 @@ from streamlit_gsheets import GSheetsConnection
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
-from panel_utils import normalize_panels
+from panel_utils import normalize_panels, parse_tooling_json_cell
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -512,11 +512,10 @@ with col1:
                         tooling = None
                         if "Tooling JSON" in subset.columns:
                             raw_tooling = r.get("Tooling JSON")
-                            if raw_tooling is not None and str(raw_tooling).strip() and str(raw_tooling).strip().lower() != "nan":
-                                try:
-                                    tooling = json.loads(str(raw_tooling))
-                                except Exception:
-                                    st.warning(f"Invalid Tooling JSON for panel '{r['Panel Name']}'. Skipping tooling for this row.")
+                            try:
+                                tooling = parse_tooling_json_cell(raw_tooling)
+                            except ValueError:
+                                st.warning(f"Invalid Tooling JSON for panel '{r['Panel Name']}'. Skipping tooling for this row.")
                         add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"], tooling=tooling)
                         c += 1
                     if c:

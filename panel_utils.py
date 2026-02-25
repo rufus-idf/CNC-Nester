@@ -1,6 +1,35 @@
+import json
+
 TRUTHY_VALUES = {"1", "true", "t", "yes", "y", "on"}
 FALSY_VALUES = {"0", "false", "f", "no", "n", "off", ""}
 
+
+
+
+def parse_tooling_json_cell(raw_value):
+    if raw_value is None:
+        return None
+
+    text = str(raw_value).strip()
+    if not text or text.lower() == "nan":
+        return None
+
+    candidates = [text]
+    if text.startswith('"') and text.endswith('"') and len(text) >= 2:
+        inner = text[1:-1]
+        candidates.append(inner)
+        candidates.append(inner.replace('""', '"'))
+    candidates.append(text.replace('""', '"'))
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            continue
+        if isinstance(parsed, dict):
+            return parsed
+
+    raise ValueError("Invalid Tooling JSON")
 
 def coerce_bool(value):
     """Safely coerce mixed UI/import values to bool without bool('False') bugs."""

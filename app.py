@@ -13,7 +13,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
-from nest_storage import build_nest_payload, dxf_to_payload, parse_nest_payload, payload_to_dxf
+from nest_storage import build_nest_payload, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 
@@ -47,6 +47,8 @@ if 'manual_part_select' not in st.session_state:
     st.session_state.manual_part_select = None
 if 'manual_notice' not in st.session_state:
     st.session_state.manual_notice = None
+if 'cix_preview' not in st.session_state:
+    st.session_state.cix_preview = None
 
 
 def apply_pending_loaded_nest():
@@ -62,6 +64,7 @@ def apply_pending_loaded_nest():
     st.session_state["loaded_nest_name"] = pending["nest_name"]
     st.session_state.machine_type = pending.get("machine_type", "Flat Bed")
     st.session_state.manual_layout = pending.get("manual_layout")
+    st.session_state.cix_preview = pending.get("cix_preview")
     st.session_state.manual_layout_draft = None
 
 
@@ -78,6 +81,7 @@ def clear_data():
     st.session_state.manual_layout = None
     st.session_state.manual_layout_draft = None
     st.session_state.last_packer = None
+    st.session_state.cix_preview = None
 
 
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
@@ -232,6 +236,43 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
     if selected not in part_ids:
         return None
     return selected
+
+
+
+
+def draw_cix_preview(cix_preview):
+    if not cix_preview:
+        return
+
+    panel_w = float(cix_preview.get("panel_width", 0.0))
+    panel_h = float(cix_preview.get("panel_length", 0.0))
+    if panel_w <= 0 or panel_h <= 0:
+        return
+
+    borings = cix_preview.get("borings", [])
+    segments = cix_preview.get("toolpath_segments", [])
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_xlim(0, panel_w)
+    ax.set_ylim(0, panel_h)
+    ax.set_aspect('equal')
+    ax.add_patch(patches.Rectangle((0, 0), panel_w, panel_h, fc='#f5f9ff', ec='#1f2937', lw=1.5))
+
+    for seg in segments:
+        ax.plot([seg["x1"], seg["x2"]], [seg["y1"], seg["y2"]], color='#2563eb', linewidth=1.8)
+
+    if borings:
+        xs = [b["x"] for b in borings]
+        ys = [b["y"] for b in borings]
+        ax.scatter(xs, ys, c='#dc2626', s=45, marker='o', edgecolors='white', linewidths=0.8, zorder=3)
+
+    ax.set_title('CIX Machining Preview (Blue = toolpath, Red = boring)')
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Y (mm)')
+    st.pyplot(fig)
+
+    thickness = float(cix_preview.get("panel_thickness", 0.0))
+    st.caption(f"Detected: {len(segments)} toolpath segment(s), {len(borings)} boring operation(s), thickness {thickness:g} mm")
 
 
 @st.dialog("Manual Nesting Tuning", width="large")
@@ -390,7 +431,7 @@ with menu_col2:
         use_container_width=True,
     )
 with menu_col3:
-    uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf"], accept_multiple_files=False)
+    uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf", "cix"], accept_multiple_files=False)
 
 loaded_nest_name = st.session_state.pop("loaded_nest_name", None)
 if loaded_nest_name:
@@ -403,13 +444,18 @@ else:
     upload_signature = f"{uploaded_nest.name}:{len(file_bytes)}:{hashlib.md5(file_bytes).hexdigest()}"
     if st.session_state.get("last_loaded_nest_signature") != upload_signature:
         try:
-            payload = dxf_to_payload(file_bytes)
+            payload = nest_file_to_payload(uploaded_nest.name, file_bytes)
             loaded = parse_nest_payload(payload)
             st.session_state["pending_loaded_nest"] = loaded
             st.session_state["last_loaded_nest_signature"] = upload_signature
             st.rerun()
         except Exception as e:
             st.error(f"Failed to load nest file: {e}")
+
+
+if st.session_state.cix_preview:
+    st.markdown("### CIX Machining Preview")
+    draw_cix_preview(st.session_state.cix_preview)
 
 st.write("---")
 col1, col2 = st.columns([1, 2])
@@ -575,6 +621,10 @@ with col2:
     if st.session_state.last_packer:
         dxf = create_dxf_zip(st.session_state.last_packer, SHEET_W, SHEET_H, MARGIN, KERF)
         st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary")
+
+    if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
+        cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview)
+        st.download_button("💾 CIX Programs", cix_zip, "nest_cix.zip", "application/zip", type="secondary")
 
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
         st.write("---")

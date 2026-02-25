@@ -47,6 +47,8 @@ if 'manual_part_select' not in st.session_state:
     st.session_state.manual_part_select = None
 if 'manual_notice' not in st.session_state:
     st.session_state.manual_notice = None
+if 'cix_preview' not in st.session_state:
+    st.session_state.cix_preview = None
 
 
 def apply_pending_loaded_nest():
@@ -62,6 +64,7 @@ def apply_pending_loaded_nest():
     st.session_state["loaded_nest_name"] = pending["nest_name"]
     st.session_state.machine_type = pending.get("machine_type", "Flat Bed")
     st.session_state.manual_layout = pending.get("manual_layout")
+    st.session_state.cix_preview = pending.get("cix_preview")
     st.session_state.manual_layout_draft = None
 
 
@@ -78,6 +81,7 @@ def clear_data():
     st.session_state.manual_layout = None
     st.session_state.manual_layout_draft = None
     st.session_state.last_packer = None
+    st.session_state.cix_preview = None
 
 
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
@@ -232,6 +236,43 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
     if selected not in part_ids:
         return None
     return selected
+
+
+
+
+def draw_cix_preview(cix_preview):
+    if not cix_preview:
+        return
+
+    panel_w = float(cix_preview.get("panel_width", 0.0))
+    panel_h = float(cix_preview.get("panel_length", 0.0))
+    if panel_w <= 0 or panel_h <= 0:
+        return
+
+    borings = cix_preview.get("borings", [])
+    segments = cix_preview.get("toolpath_segments", [])
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_xlim(0, panel_w)
+    ax.set_ylim(0, panel_h)
+    ax.set_aspect('equal')
+    ax.add_patch(patches.Rectangle((0, 0), panel_w, panel_h, fc='#f5f9ff', ec='#1f2937', lw=1.5))
+
+    for seg in segments:
+        ax.plot([seg["x1"], seg["x2"]], [seg["y1"], seg["y2"]], color='#2563eb', linewidth=1.8)
+
+    if borings:
+        xs = [b["x"] for b in borings]
+        ys = [b["y"] for b in borings]
+        ax.scatter(xs, ys, c='#dc2626', s=45, marker='o', edgecolors='white', linewidths=0.8, zorder=3)
+
+    ax.set_title('CIX Machining Preview (Blue = toolpath, Red = boring)')
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Y (mm)')
+    st.pyplot(fig)
+
+    thickness = float(cix_preview.get("panel_thickness", 0.0))
+    st.caption(f"Detected: {len(segments)} toolpath segment(s), {len(borings)} boring operation(s), thickness {thickness:g} mm")
 
 
 @st.dialog("Manual Nesting Tuning", width="large")
@@ -410,6 +451,11 @@ else:
             st.rerun()
         except Exception as e:
             st.error(f"Failed to load nest file: {e}")
+
+
+if st.session_state.cix_preview:
+    st.markdown("### CIX Machining Preview")
+    draw_cix_preview(st.session_state.cix_preview)
 
 st.write("---")
 col1, col2 = st.columns([1, 2])

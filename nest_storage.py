@@ -74,6 +74,7 @@ def parse_nest_payload(payload):
         "nest_name": str(payload.get("nest_name", "Untitled")),
         "manual_layout": manual_layout,
         "machine_type": str(settings.get("machine_type", "Flat Bed")),
+        "cix_preview": payload.get("cix_preview"),
     }
 
 
@@ -182,8 +183,67 @@ def dxf_to_payload(dxf_bytes):
     return json.loads(payload_json)
 
 
-_CIX_DIMENSION_PATTERN = re.compile(r'(?i)(LPX|LPY|DX|DY)\s*=\s*"?([0-9]+(?:\.[0-9]+)?)"?')
-_CIX_PARAM_PATTERN = re.compile(r'(?is)NAME\s*=\s*"?(LPX|LPY|DX|DY)"?[^\n\r]*?VALUE\s*=\s*"?([0-9]+(?:\.[0-9]+)?)"?')
+
+
+def _parse_cix_macro_params(block_text):
+    params = {}
+    for param_name, param_value in re.findall(r'(?im)PARAM,\s*NAME\s*=\s*"?([A-Z0-9_]+)"?\s*,\s*VALUE\s*=\s*"?([^"\n\r]*)"?', block_text):
+        params[param_name.upper()] = param_value.strip()
+    return params
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _extract_cix_machining_preview(cix_text):
+    macro_blocks = re.findall(r'(?is)BEGIN\s+MACRO\s*(.*?)\s*END\s+MACRO', cix_text)
+
+    borings = []
+    toolpath_segments = []
+    current_point = None
+
+    for block in macro_blocks:
+        name_match = re.search(r'(?im)^\s*NAME\s*=\s*"?([A-Z0-9_]+)"?\s*$', block)
+        if not name_match:
+            continue
+        macro_name = name_match.group(1).upper()
+        params = _parse_cix_macro_params(block)
+
+        if macro_name == 'START_POINT':
+            current_point = (_safe_float(params.get('X')), _safe_float(params.get('Y')))
+        elif macro_name == 'LINE_EP':
+            end_point = (_safe_float(params.get('XE')), _safe_float(params.get('YE')))
+            if current_point is not None:
+                toolpath_segments.append({
+                    'x1': float(current_point[0]),
+                    'y1': float(current_point[1]),
+                    'x2': float(end_point[0]),
+                    'y2': float(end_point[1]),
+                })
+            current_point = end_point
+        elif macro_name in {'ENDPATH', 'GEO'}:
+            continue
+        elif macro_name == 'BG':
+            borings.append({
+                'x': _safe_float(params.get('X')),
+                'y': _safe_float(params.get('Y')),
+                'depth': _safe_float(params.get('DP')),
+                'tool': params.get('TNM', ''),
+                'side': params.get('SIDE', ''),
+            })
+
+    return {
+        'toolpath_segments': toolpath_segments,
+        'borings': borings,
+    }
+
+
+_CIX_DIMENSION_PATTERN = re.compile(r'(?i)(LPX|LPY|LPZ|DX|DY)\s*=\s*"?([0-9]+(?:\.[0-9]+)?)"?')
+_CIX_PARAM_PATTERN = re.compile(r'(?is)NAME\s*=\s*"?(LPX|LPY|LPZ|DX|DY)"?[^\n\r]*?VALUE\s*=\s*"?([0-9]+(?:\.[0-9]+)?)"?')
 _CIX_SHEET_PATTERN = re.compile(r'(?i)(PAN=|LX=|LY=)')
 
 
@@ -203,6 +263,8 @@ def cix_to_payload(cix_bytes):
     material = "Loaded CIX"
     if _CIX_SHEET_PATTERN.search(cix_text):
         material = "CIX Sheet"
+
+    preview = _extract_cix_machining_preview(cix_text)
 
     return {
         "version": 1,
@@ -226,6 +288,13 @@ def cix_to_payload(cix_bytes):
             }
         ]),
         "packed_sheets": [],
+        "cix_preview": {
+            "panel_width": float(width),
+            "panel_length": float(length),
+            "panel_thickness": _safe_float(dimensions.get("LPZ"), 0.0),
+            "borings": preview["borings"],
+            "toolpath_segments": preview["toolpath_segments"],
+        },
     }
 
 

@@ -2,6 +2,7 @@ import copy
 import csv
 import hashlib
 import io
+import json
 import zipfile
 
 import ezdxf
@@ -13,7 +14,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
-from nest_storage import build_nest_payload, dxf_to_payload, parse_nest_payload, payload_to_dxf
+from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 
@@ -47,6 +48,8 @@ if 'manual_part_select' not in st.session_state:
     st.session_state.manual_part_select = None
 if 'manual_notice' not in st.session_state:
     st.session_state.manual_notice = None
+if 'cix_preview' not in st.session_state:
+    st.session_state.cix_preview = None
 
 
 def apply_pending_loaded_nest():
@@ -62,15 +65,30 @@ def apply_pending_loaded_nest():
     st.session_state["loaded_nest_name"] = pending["nest_name"]
     st.session_state.machine_type = pending.get("machine_type", "Flat Bed")
     st.session_state.manual_layout = pending.get("manual_layout")
+    st.session_state.cix_preview = pending.get("cix_preview")
     st.session_state.manual_layout_draft = None
 
 
 # --- HELPERS ---
-def add_panel(w, l, q, label, grain, mat):
-    st.session_state['panels'].append({
+
+
+def panel_tooling_map(panels):
+    tooling_map = {}
+    for panel in normalize_panels(panels or []):
+        tooling = panel.get("Tooling")
+        if isinstance(tooling, dict):
+            tooling_map[str(panel.get("Label", ""))] = tooling
+    return tooling_map
+
+
+def add_panel(w, l, q, label, grain, mat, tooling=None):
+    row = {
         "Label": label, "Width": w, "Length": l, "Qty": q,
         "Grain?": grain, "Material": mat
-    })
+    }
+    if tooling is not None:
+        row["Tooling"] = tooling
+    st.session_state['panels'].append(row)
 
 
 def clear_data():
@@ -78,6 +96,7 @@ def clear_data():
     st.session_state.manual_layout = None
     st.session_state.manual_layout_draft = None
     st.session_state.last_packer = None
+    st.session_state.cix_preview = None
 
 
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
@@ -119,7 +138,7 @@ def update_sheet_dims():
         st.session_state.sheet_h = 1220.0
 
 
-def draw_layout_sheet(layout, selected_sheet_idx):
+def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     fig, ax = plt.subplots(figsize=(10, 6))
     ax.set_xlim(0, layout["sheet_w"])
@@ -133,6 +152,12 @@ def draw_layout_sheet(layout, selected_sheet_idx):
         fc = '#5a7' if part.get('rotated') else '#6fa8dc'
         ax.add_patch(patches.Rectangle((part["x"], part["y"]), part["w"], part["h"], fc=fc, ec='#222'))
         ax.text(part["x"] + part["w"] / 2, part["y"] + part["h"] / 2, f"{part['rid']}\n{int(part['w'])}x{int(part['h'])}", ha='center', va='center', fontsize=7)
+
+    boring_points = build_sheet_boring_points(selected_sheet.get("parts", []), tooling_map, template_preview)
+    if boring_points:
+        ax.scatter([p["x"] for p in boring_points], [p["y"] for p in boring_points], c='#d32f2f', s=28, marker='o', edgecolors='white', linewidths=0.6, zorder=4)
+        ax.text(layout["margin"], layout["sheet_h"] - layout["margin"] - 25, f"Borings: {len(boring_points)}", color='#b71c1c', fontsize=8, ha='left', va='top')
+
     st.pyplot(fig)
 
 
@@ -232,6 +257,43 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
     if selected not in part_ids:
         return None
     return selected
+
+
+
+
+def draw_cix_preview(cix_preview):
+    if not cix_preview:
+        return
+
+    panel_w = float(cix_preview.get("panel_width", 0.0))
+    panel_h = float(cix_preview.get("panel_length", 0.0))
+    if panel_w <= 0 or panel_h <= 0:
+        return
+
+    borings = cix_preview.get("borings", [])
+    segments = cix_preview.get("toolpath_segments", [])
+
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.set_xlim(0, panel_w)
+    ax.set_ylim(0, panel_h)
+    ax.set_aspect('equal')
+    ax.add_patch(patches.Rectangle((0, 0), panel_w, panel_h, fc='#f5f9ff', ec='#1f2937', lw=1.5))
+
+    for seg in segments:
+        ax.plot([seg["x1"], seg["x2"]], [seg["y1"], seg["y2"]], color='#2563eb', linewidth=1.8)
+
+    if borings:
+        xs = [b["x"] for b in borings]
+        ys = [b["y"] for b in borings]
+        ax.scatter(xs, ys, c='#dc2626', s=45, marker='o', edgecolors='white', linewidths=0.8, zorder=3)
+
+    ax.set_title('CIX Machining Preview (Blue = toolpath, Red = boring)')
+    ax.set_xlabel('X (mm)')
+    ax.set_ylabel('Y (mm)')
+    st.pyplot(fig)
+
+    thickness = float(cix_preview.get("panel_thickness", 0.0))
+    st.caption(f"Detected: {len(segments)} toolpath segment(s), {len(borings)} boring operation(s), thickness {thickness:g} mm")
 
 
 @st.dialog("Manual Nesting Tuning", width="large")
@@ -390,7 +452,7 @@ with menu_col2:
         use_container_width=True,
     )
 with menu_col3:
-    uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf"], accept_multiple_files=False)
+    uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf", "cix"], accept_multiple_files=False)
 
 loaded_nest_name = st.session_state.pop("loaded_nest_name", None)
 if loaded_nest_name:
@@ -403,13 +465,18 @@ else:
     upload_signature = f"{uploaded_nest.name}:{len(file_bytes)}:{hashlib.md5(file_bytes).hexdigest()}"
     if st.session_state.get("last_loaded_nest_signature") != upload_signature:
         try:
-            payload = dxf_to_payload(file_bytes)
+            payload = nest_file_to_payload(uploaded_nest.name, file_bytes)
             loaded = parse_nest_payload(payload)
             st.session_state["pending_loaded_nest"] = loaded
             st.session_state["last_loaded_nest_signature"] = upload_signature
             st.rerun()
         except Exception as e:
             st.error(f"Failed to load nest file: {e}")
+
+
+if st.session_state.cix_preview:
+    st.markdown("### CIX Machining Preview")
+    draw_cix_preview(st.session_state.cix_preview)
 
 st.write("---")
 col1, col2 = st.columns([1, 2])
@@ -442,7 +509,15 @@ with col1:
                 if st.button("➕ Add Product"):
                     c = 0
                     for _, r in subset.iterrows():
-                        add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"])
+                        tooling = None
+                        if "Tooling JSON" in subset.columns:
+                            raw_tooling = r.get("Tooling JSON")
+                            if raw_tooling is not None and str(raw_tooling).strip() and str(raw_tooling).strip().lower() != "nan":
+                                try:
+                                    tooling = json.loads(str(raw_tooling))
+                                except Exception:
+                                    st.warning(f"Invalid Tooling JSON for panel '{r['Panel Name']}'. Skipping tooling for this row.")
+                        add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"], tooling=tooling)
                         c += 1
                     if c:
                         st.success(f"Added {c} items")
@@ -577,6 +652,10 @@ with col2:
         st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary")
 
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
+        cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview, st.session_state['panels'])
+        st.download_button("💾 CIX Programs", cix_zip, "nest_cix.zip", "application/zip", type="secondary")
+
+    if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
         st.write("---")
         st.markdown("### 3. Nested Result")
 
@@ -593,7 +672,7 @@ with col2:
             preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices, key="preview_sheet_select")
             preview_sheet_idx = sheet_choices.index(preview_sheet_label)
             actual_sheet_idx = preview_sheets[preview_sheet_idx][0]
-            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx)
+            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx, panel_tooling_map(st.session_state["panels"]), st.session_state.cix_preview)
 
         if MACHINE_TYPE == "Flat Bed":
             action_col1, action_col2 = st.columns([1, 2])

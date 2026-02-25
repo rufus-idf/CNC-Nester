@@ -1,6 +1,7 @@
 import json
 import base64
 import io
+import re
 from datetime import datetime
 
 import ezdxf
@@ -179,3 +180,57 @@ def dxf_to_payload(dxf_bytes):
     encoded_payload = "".join(comments[start:end])
     payload_json = base64.b64decode(encoded_payload.encode("ascii")).decode("utf-8")
     return json.loads(payload_json)
+
+
+_CIX_DIMENSION_PATTERN = re.compile(r'(?i)(LPX|LPY|DX|DY)\s*=\s*"?([0-9]+(?:\.[0-9]+)?)"?')
+_CIX_PARAM_PATTERN = re.compile(r'(?is)NAME\s*=\s*"?(LPX|LPY|DX|DY)"?[^\n\r]*?VALUE\s*=\s*"?([0-9]+(?:\.[0-9]+)?)"?')
+_CIX_SHEET_PATTERN = re.compile(r'(?i)(PAN=|LX=|LY=)')
+
+
+def cix_to_payload(cix_bytes):
+    cix_text = cix_bytes.decode("utf-8", errors="ignore")
+    dimensions = {}
+    for key, value in _CIX_DIMENSION_PATTERN.findall(cix_text):
+        dimensions[key.upper()] = float(value)
+    for key, value in _CIX_PARAM_PATTERN.findall(cix_text):
+        dimensions[key.upper()] = float(value)
+
+    width = dimensions.get("LPX", dimensions.get("DX"))
+    length = dimensions.get("LPY", dimensions.get("DY"))
+    if not width or not length:
+        raise ValueError("Unable to find LPX/LPY (or DX/DY) dimensions in CIX file")
+
+    material = "Loaded CIX"
+    if _CIX_SHEET_PATTERN.search(cix_text):
+        material = "CIX Sheet"
+
+    return {
+        "version": 1,
+        "nest_name": "Imported CIX Nest",
+        "saved_at": datetime.utcnow().isoformat() + "Z",
+        "settings": {
+            "sheet_w": 2440.0,
+            "sheet_h": 1220.0,
+            "margin": 0.0,
+            "kerf": 0.0,
+            "machine_type": "Flat Bed",
+        },
+        "panels": normalize_panels([
+            {
+                "Label": "Loaded CIX Part 1",
+                "Width": float(width),
+                "Length": float(length),
+                "Qty": 1,
+                "Grain?": False,
+                "Material": material,
+            }
+        ]),
+        "packed_sheets": [],
+    }
+
+
+def nest_file_to_payload(file_name, file_bytes):
+    ext = str(file_name or "").lower().rsplit(".", 1)[-1] if "." in str(file_name or "") else ""
+    if ext == "cix":
+        return cix_to_payload(file_bytes)
+    return dxf_to_payload(file_bytes)

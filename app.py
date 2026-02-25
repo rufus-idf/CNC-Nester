@@ -13,7 +13,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
-from nest_storage import build_nest_payload, dxf_to_payload, parse_nest_payload, payload_to_dxf
+from nest_storage import build_nest_payload, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 
@@ -390,7 +390,7 @@ with menu_col2:
         use_container_width=True,
     )
 with menu_col3:
-    uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf"], accept_multiple_files=False)
+    uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf", "cix"], accept_multiple_files=False)
 
 loaded_nest_name = st.session_state.pop("loaded_nest_name", None)
 if loaded_nest_name:
@@ -403,7 +403,7 @@ else:
     upload_signature = f"{uploaded_nest.name}:{len(file_bytes)}:{hashlib.md5(file_bytes).hexdigest()}"
     if st.session_state.get("last_loaded_nest_signature") != upload_signature:
         try:
-            payload = dxf_to_payload(file_bytes)
+            payload = nest_file_to_payload(uploaded_nest.name, file_bytes)
             loaded = parse_nest_payload(payload)
             st.session_state["pending_loaded_nest"] = loaded
             st.session_state["last_loaded_nest_signature"] = upload_signature

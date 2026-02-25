@@ -43,14 +43,17 @@ def normalize_panels(panels):
         row["Qty"] = max(1, _coerce_int(row.get("Qty", 1), default=1))
         row["Grain?"] = coerce_bool(row.get("Grain?", False))
         row["Material"] = str(row.get("Material", "Manual"))
-        normalized.append({
+        normalized_row = {
             "Label": row["Label"],
             "Width": row["Width"],
             "Length": row["Length"],
             "Qty": row["Qty"],
             "Grain?": row["Grain?"],
             "Material": row["Material"],
-        })
+        }
+        if "Tooling" in row and row["Tooling"] is not None:
+            normalized_row["Tooling"] = row["Tooling"]
+        normalized.append(normalized_row)
     return normalized
 
 

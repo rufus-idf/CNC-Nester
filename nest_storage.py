@@ -1,6 +1,8 @@
 import json
 import base64
 import io
+import re
+import zipfile
 from datetime import datetime
 
 import ezdxf
@@ -73,6 +75,7 @@ def parse_nest_payload(payload):
         "nest_name": str(payload.get("nest_name", "Untitled")),
         "manual_layout": manual_layout,
         "machine_type": str(settings.get("machine_type", "Flat Bed")),
+        "cix_preview": payload.get("cix_preview"),
     }
 
 
@@ -179,3 +182,296 @@ def dxf_to_payload(dxf_bytes):
     encoded_payload = "".join(comments[start:end])
     payload_json = base64.b64decode(encoded_payload.encode("ascii")).decode("utf-8")
     return json.loads(payload_json)
+
+
+
+
+def _parse_cix_macro_params(block_text):
+    params = {}
+    for param_name, param_value in re.findall(r'(?im)PARAM,\s*NAME\s*=\s*"?([A-Z0-9_]+)"?\s*,\s*VALUE\s*=\s*"?([^"\n\r]*)"?', block_text):
+        params[param_name.upper()] = param_value.strip()
+    return params
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _extract_cix_machining_preview(cix_text):
+    macro_blocks = re.findall(r'(?is)BEGIN\s+MACRO\s*(.*?)\s*END\s+MACRO', cix_text)
+
+    borings = []
+    toolpath_segments = []
+    current_point = None
+
+    for block in macro_blocks:
+        name_match = re.search(r'(?im)^\s*NAME\s*=\s*"?([A-Z0-9_]+)"?\s*$', block)
+        if not name_match:
+            continue
+        macro_name = name_match.group(1).upper()
+        params = _parse_cix_macro_params(block)
+
+        if macro_name == 'START_POINT':
+            current_point = (_safe_float(params.get('X')), _safe_float(params.get('Y')))
+        elif macro_name == 'LINE_EP':
+            end_point = (_safe_float(params.get('XE')), _safe_float(params.get('YE')))
+            if current_point is not None:
+                toolpath_segments.append({
+                    'x1': float(current_point[0]),
+                    'y1': float(current_point[1]),
+                    'x2': float(end_point[0]),
+                    'y2': float(end_point[1]),
+                })
+            current_point = end_point
+        elif macro_name in {'ENDPATH', 'GEO'}:
+            continue
+        elif macro_name == 'BG':
+            borings.append({
+                'x': _safe_float(params.get('X')),
+                'y': _safe_float(params.get('Y')),
+                'depth': _safe_float(params.get('DP')),
+                'tool': params.get('TNM', ''),
+                'side': params.get('SIDE', ''),
+            })
+
+    return {
+        'toolpath_segments': toolpath_segments,
+        'borings': borings,
+    }
+
+
+_CIX_DIMENSION_PATTERN = re.compile(r'(?i)(LPX|LPY|LPZ|DX|DY)\s*=\s*"?([0-9]+(?:\.[0-9]+)?)"?')
+_CIX_PARAM_PATTERN = re.compile(r'(?is)NAME\s*=\s*"?(LPX|LPY|LPZ|DX|DY)"?[^\n\r]*?VALUE\s*=\s*"?([0-9]+(?:\.[0-9]+)?)"?')
+_CIX_SHEET_PATTERN = re.compile(r'(?i)(PAN=|LX=|LY=)')
+
+
+def cix_to_payload(cix_bytes):
+    cix_text = cix_bytes.decode("utf-8", errors="ignore")
+    dimensions = {}
+    for key, value in _CIX_DIMENSION_PATTERN.findall(cix_text):
+        dimensions[key.upper()] = float(value)
+    for key, value in _CIX_PARAM_PATTERN.findall(cix_text):
+        dimensions[key.upper()] = float(value)
+
+    width = dimensions.get("LPX", dimensions.get("DX"))
+    length = dimensions.get("LPY", dimensions.get("DY"))
+    if not width or not length:
+        raise ValueError("Unable to find LPX/LPY (or DX/DY) dimensions in CIX file")
+
+    material = "Loaded CIX"
+    if _CIX_SHEET_PATTERN.search(cix_text):
+        material = "CIX Sheet"
+
+    preview = _extract_cix_machining_preview(cix_text)
+
+    return {
+        "version": 1,
+        "nest_name": "Imported CIX Nest",
+        "saved_at": datetime.utcnow().isoformat() + "Z",
+        "settings": {
+            "sheet_w": 2440.0,
+            "sheet_h": 1220.0,
+            "margin": 0.0,
+            "kerf": 0.0,
+            "machine_type": "Flat Bed",
+        },
+        "panels": normalize_panels([
+            {
+                "Label": "Loaded CIX Part 1",
+                "Width": float(width),
+                "Length": float(length),
+                "Qty": 1,
+                "Grain?": False,
+                "Material": material,
+            }
+        ]),
+        "packed_sheets": [],
+        "cix_preview": {
+            "panel_width": float(width),
+            "panel_length": float(length),
+            "panel_thickness": _safe_float(dimensions.get("LPZ"), 0.0),
+            "borings": preview["borings"],
+            "toolpath_segments": preview["toolpath_segments"],
+        },
+    }
+
+
+def nest_file_to_payload(file_name, file_bytes):
+    ext = str(file_name or "").lower().rsplit(".", 1)[-1] if "." in str(file_name or "") else ""
+    if ext == "cix":
+        return cix_to_payload(file_bytes)
+    return dxf_to_payload(file_bytes)
+
+
+def _format_cix_value(value):
+    if isinstance(value, str):
+        return f'"{value}"'
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return f"{float(value):.3f}".rstrip("0").rstrip(".")
+
+
+def _cix_macro(name, params):
+    lines = ["BEGIN MACRO", f"	NAME={name}"]
+    for key, value in params.items():
+        lines.append(f"	PARAM,NAME={key},VALUE={_format_cix_value(value)}")
+    lines.append("END MACRO")
+    return "\n".join(lines)
+
+
+def _transform_template_value(value, template_size, target_size):
+    value_f = _safe_float(value)
+    if template_size <= 0:
+        return value_f
+    return value_f * (target_size / template_size)
+
+
+def _map_template_point_to_sheet(x, y, part, template_w, template_h):
+    part_w = _safe_float(part.get("w"), 0.0)
+    part_h = _safe_float(part.get("h"), 0.0)
+    part_x = _safe_float(part.get("x"), 0.0)
+    part_y = _safe_float(part.get("y"), 0.0)
+
+    sx = _transform_template_value(x, template_w, part_w)
+    sy = _transform_template_value(y, template_h, part_h)
+
+    if part.get("rotated"):
+        # 90° rotation mapping for preview/manual-layout rotated parts.
+        return part_x + (part_w - sy), part_y + sx
+    return part_x + sx, part_y + sy
+
+
+def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=None):
+    template_preview = template_preview or {}
+    template_w = _safe_float(template_preview.get("panel_width"), 0.0)
+    template_h = _safe_float(template_preview.get("panel_length"), 0.0)
+
+    program_lines = [
+        "BEGIN ID CID3",
+        "	REL=5.0",
+        "END ID",
+        "",
+        "BEGIN MAINDATA",
+        f"	LPX={_format_cix_value(sheet_w)}",
+        f"	LPY={_format_cix_value(sheet_h)}",
+        f"	LPZ={_format_cix_value(panel_t)}",
+        '	ORLST="9"',
+        "	SIMMETRY=0",
+        "END MAINDATA",
+        "",
+        "BEGIN PUBLICVARS",
+        "END PUBLICVARS",
+        "",
+    ]
+
+    for part_idx, part in enumerate(parts, start=1):
+        part_w = _safe_float(part.get("w"), 0.0)
+        part_h = _safe_float(part.get("h"), 0.0)
+        if part_w <= 0 or part_h <= 0:
+            continue
+
+        part_x = _safe_float(part.get("x"), 0.0)
+        part_y = _safe_float(part.get("y"), 0.0)
+        part_label = str(part.get("rid") or f"Part_{part_idx}")
+
+        # Nested part perimeter on the sheet.
+        program_lines.append(_cix_macro("GEO", {"LAY": "Layer 0", "ID": f"G{part_idx}", "SIDE": 0, "CRN": "2", "RTY": 2}))
+        program_lines.append("")
+        program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer 0", "X": part_x, "Y": part_y + part_h}))
+        program_lines.append("")
+        for seg_idx, (xe, ye) in enumerate([
+            (part_x, part_y),
+            (part_x + part_w, part_y),
+            (part_x + part_w, part_y + part_h),
+            (part_x, part_y + part_h),
+        ]):
+            program_lines.append(_cix_macro("LINE_EP", {
+                "LAY": "Layer 0",
+                "ID": 1000 * part_idx + seg_idx,
+                "XE": xe,
+                "YE": ye,
+                "ZS": 0,
+                "ZE": 0,
+                "FD": 0,
+                "SP": 0,
+                "MVT": 0,
+            }))
+            program_lines.append("")
+        program_lines.append(_cix_macro("ENDPATH", {}))
+        program_lines.append("")
+
+        # Apply template boring operations to each nested part.
+        for boring_idx, boring in enumerate(template_preview.get("borings", []), start=1):
+            bx, by = _map_template_point_to_sheet(
+                boring.get("x", 0),
+                boring.get("y", 0),
+                part,
+                template_w,
+                template_h,
+            )
+            depth = _safe_float(boring.get("depth", 0.0))
+            tool = boring.get("tool") or "DRILL"
+            program_lines.append(_cix_macro("BG", {
+                "LAY": "Layer 1",
+                "ID": f"P{part_idx}_{boring_idx}",
+                "SIDE": int(_safe_float(boring.get("side", 0))),
+                "CRN": "1",
+                "X": bx,
+                "Y": by,
+                "Z": 0,
+                "DP": depth,
+                "TNM": tool,
+                "CKA": 3,
+                "OPT": 1,
+            }))
+            program_lines.append("")
+
+        # Apply template toolpath segments to each nested part.
+        for tp_idx, seg in enumerate(template_preview.get("toolpath_segments", []), start=1):
+            sx, sy = _map_template_point_to_sheet(seg.get("x1", 0), seg.get("y1", 0), part, template_w, template_h)
+            ex, ey = _map_template_point_to_sheet(seg.get("x2", 0), seg.get("y2", 0), part, template_w, template_h)
+            program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer TP", "X": sx, "Y": sy}))
+            program_lines.append("")
+            program_lines.append(_cix_macro("LINE_EP", {
+                "LAY": "Layer TP",
+                "ID": 5000 * part_idx + tp_idx,
+                "XE": ex,
+                "YE": ey,
+                "ZS": 0,
+                "ZE": 0,
+                "FD": 0,
+                "SP": 0,
+                "MVT": 0,
+            }))
+            program_lines.append("")
+
+        program_lines.append(f"'PART_LABEL={part_label}'")
+        program_lines.append("")
+
+    return "\n".join(program_lines).strip() + "\n"
+
+
+def create_cix_zip(layout, template_preview=None):
+    if not layout or not layout.get("sheets"):
+        raise ValueError("No layout data available to export CIX")
+
+    zip_buffer = io.BytesIO()
+    thickness = _safe_float((template_preview or {}).get("panel_thickness"), 18.0)
+    sheet_w = _safe_float(layout.get("sheet_w"), 2440.0)
+    sheet_h = _safe_float(layout.get("sheet_h"), 1220.0)
+
+    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+        for sheet in layout.get("sheets", []):
+            sheet_index = int(sheet.get("sheet_index", 0)) + 1
+            parts = sheet.get("parts", [])
+            if not parts:
+                continue
+            cix_text = _build_sheet_cix_program(sheet_w, sheet_h, thickness, parts, template_preview=template_preview)
+            zip_file.writestr(f"Sheet_{sheet_index}.cix", cix_text)
+
+    return zip_buffer.getvalue()

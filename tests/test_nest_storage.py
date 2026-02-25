@@ -3,7 +3,7 @@ import io
 
 import ezdxf
 
-from nest_storage import build_nest_payload, parse_nest_payload, payload_to_dxf, dxf_to_payload
+from nest_storage import build_nest_payload, parse_nest_payload, payload_to_dxf, dxf_to_payload, cix_to_payload, nest_file_to_payload
 
 
 class NestStorageTests(unittest.TestCase):
@@ -101,6 +101,27 @@ class NestStorageTests(unittest.TestCase):
         self.assertIsNotNone(parsed["manual_layout"])
         self.assertEqual(parsed["manual_layout"]["sheets"][0]["parts"][0]["x"], 100.0)
         self.assertEqual(parsed["manual_layout"]["sheets"][0]["parts"][0]["y"], 120.0)
+
+
+
+    def test_cix_import_loads_panel_dimensions(self):
+        cix_bytes = b"BEGIN MACRO\nPARAM,NAME=LPX,VALUE=\"762\"\nPARAM,NAME=LPY,VALUE=\"508\"\nEND MACRO\n"
+
+        loaded_payload = cix_to_payload(cix_bytes)
+        parsed = parse_nest_payload(loaded_payload)
+
+        self.assertEqual(len(parsed["panels"]), 1)
+        self.assertEqual(parsed["panels"][0]["Width"], 762.0)
+        self.assertEqual(parsed["panels"][0]["Length"], 508.0)
+
+    def test_nest_file_to_payload_routes_cix_by_extension(self):
+        cix_bytes = b"LPX=600\nLPY=300\n"
+
+        loaded_payload = nest_file_to_payload("part.cix", cix_bytes)
+        parsed = parse_nest_payload(loaded_payload)
+
+        self.assertEqual(parsed["panels"][0]["Width"], 600.0)
+        self.assertEqual(parsed["panels"][0]["Length"], 300.0)
 
     def test_dxf_without_payload_raises_error(self):
         dxf_bytes = b"0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nEOF\n"

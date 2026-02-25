@@ -2,6 +2,7 @@ import json
 import base64
 import io
 import re
+import zipfile
 from datetime import datetime
 
 import ezdxf
@@ -303,3 +304,122 @@ def nest_file_to_payload(file_name, file_bytes):
     if ext == "cix":
         return cix_to_payload(file_bytes)
     return dxf_to_payload(file_bytes)
+
+
+def _format_cix_value(value):
+    if isinstance(value, str):
+        return f'"{value}"'
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return f"{float(value):.3f}".rstrip("0").rstrip(".")
+
+
+def _cix_macro(name, params):
+    lines = ["BEGIN MACRO", f"	NAME={name}"]
+    for key, value in params.items():
+        lines.append(f"	PARAM,NAME={key},VALUE={_format_cix_value(value)}")
+    lines.append("END MACRO")
+    return "\n".join(lines)
+
+
+def _transform_template_value(value, template_size, target_size):
+    value_f = _safe_float(value)
+    if template_size <= 0:
+        return value_f
+    return value_f * (target_size / template_size)
+
+
+def _build_cix_program(panel_w, panel_h, panel_t, label, template_preview=None):
+    template_preview = template_preview or {}
+    template_w = _safe_float(template_preview.get("panel_width"), panel_w)
+    template_h = _safe_float(template_preview.get("panel_length"), panel_h)
+
+    program_lines = [
+        "BEGIN ID CID3",
+        "	REL=5.0",
+        "END ID",
+        "",
+        "BEGIN MAINDATA",
+        f"	LPX={_format_cix_value(panel_w)}",
+        f"	LPY={_format_cix_value(panel_h)}",
+        f"	LPZ={_format_cix_value(panel_t)}",
+        '	ORLST="9"',
+        "	SIMMETRY=0",
+        "END MAINDATA",
+        "",
+        "BEGIN PUBLICVARS",
+        "END PUBLICVARS",
+        "",
+    ]
+
+    # Outer contour path (rectangle)
+    program_lines.append(_cix_macro("GEO", {"LAY": "Layer 0", "ID": "G1001", "SIDE": 0, "CRN": "2", "RTY": 2}))
+    program_lines.append("")
+    program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer 0", "X": 0, "Y": panel_h}))
+    program_lines.append("")
+    for idx, (xe, ye) in enumerate([(0, 0), (panel_w, 0), (panel_w, panel_h), (0, panel_h)]):
+        program_lines.append(_cix_macro("LINE_EP", {"LAY": "Layer 0", "ID": 100 + idx, "XE": xe, "YE": ye, "ZS": 0, "ZE": 0, "FD": 0, "SP": 0, "MVT": 0}))
+        program_lines.append("")
+    program_lines.append(_cix_macro("ENDPATH", {}))
+    program_lines.append("")
+
+    # Apply template boring operations to this panel by size-relative mapping
+    for i, boring in enumerate(template_preview.get("borings", []), start=1):
+        x = _transform_template_value(boring.get("x", 0), template_w, panel_w)
+        y = _transform_template_value(boring.get("y", 0), template_h, panel_h)
+        depth = _safe_float(boring.get("depth", 0.0))
+        tool = boring.get("tool") or "DRILL"
+        program_lines.append(_cix_macro("BG", {
+            "LAY": "Layer 1",
+            "ID": f"P{i}",
+            "SIDE": int(_safe_float(boring.get("side", 0))),
+            "CRN": "1",
+            "X": x,
+            "Y": y,
+            "Z": 0,
+            "DP": depth,
+            "TNM": tool,
+            "CKA": 3,
+            "OPT": 1,
+        }))
+        program_lines.append("")
+
+    # Keep template path entities as an extra machining layer if present
+    for i, seg in enumerate(template_preview.get("toolpath_segments", []), start=1):
+        sx = _transform_template_value(seg.get("x1", 0), template_w, panel_w)
+        sy = _transform_template_value(seg.get("y1", 0), template_h, panel_h)
+        ex = _transform_template_value(seg.get("x2", 0), template_w, panel_w)
+        ey = _transform_template_value(seg.get("y2", 0), template_h, panel_h)
+        program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer TP", "X": sx, "Y": sy}))
+        program_lines.append("")
+        program_lines.append(_cix_macro("LINE_EP", {"LAY": "Layer TP", "ID": 5000 + i, "XE": ex, "YE": ey, "ZS": 0, "ZE": 0, "FD": 0, "SP": 0, "MVT": 0}))
+        program_lines.append("")
+
+    program_lines.append(f"'LABEL={label}'")
+    return "\n".join(program_lines).strip() + "\n"
+
+
+def create_cix_zip(layout, template_preview=None):
+    if not layout or not layout.get("sheets"):
+        raise ValueError("No layout data available to export CIX")
+
+    zip_buffer = io.BytesIO()
+    thickness = _safe_float((template_preview or {}).get("panel_thickness"), 18.0)
+
+    with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+        for sheet in layout.get("sheets", []):
+            sheet_index = int(sheet.get("sheet_index", 0)) + 1
+            for part_idx, part in enumerate(sheet.get("parts", []), start=1):
+                part_w = _safe_float(part.get("w"), 0.0)
+                part_h = _safe_float(part.get("h"), 0.0)
+                if part_w <= 0 or part_h <= 0:
+                    continue
+                rid = str(part.get("rid") or f"Part_{part_idx}")
+                safe_rid = re.sub(r'[^A-Za-z0-9._-]+', '_', rid).strip('_') or f"Part_{part_idx}"
+                cix_text = _build_cix_program(part_w, part_h, thickness, rid, template_preview=template_preview)
+                file_name = f"Sheet_{sheet_index}/{part_idx:03d}_{safe_rid}.cix"
+                zip_file.writestr(file_name, cix_text)
+
+    return zip_buffer.getvalue()

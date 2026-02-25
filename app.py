@@ -13,7 +13,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
-from nest_storage import build_nest_payload, nest_file_to_payload, parse_nest_payload, payload_to_dxf
+from nest_storage import build_nest_payload, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 
@@ -621,6 +621,10 @@ with col2:
     if st.session_state.last_packer:
         dxf = create_dxf_zip(st.session_state.last_packer, SHEET_W, SHEET_H, MARGIN, KERF)
         st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary")
+
+    if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
+        cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview)
+        st.download_button("💾 CIX Programs", cix_zip, "nest_cix.zip", "application/zip", type="secondary")
 
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
         st.write("---")

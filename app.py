@@ -2,6 +2,7 @@ import copy
 import csv
 import hashlib
 import io
+import json
 import zipfile
 
 import ezdxf
@@ -69,11 +70,14 @@ def apply_pending_loaded_nest():
 
 
 # --- HELPERS ---
-def add_panel(w, l, q, label, grain, mat):
-    st.session_state['panels'].append({
+def add_panel(w, l, q, label, grain, mat, tooling=None):
+    row = {
         "Label": label, "Width": w, "Length": l, "Qty": q,
         "Grain?": grain, "Material": mat
-    })
+    }
+    if tooling is not None:
+        row["Tooling"] = tooling
+    st.session_state['panels'].append(row)
 
 
 def clear_data():
@@ -488,7 +492,15 @@ with col1:
                 if st.button("➕ Add Product"):
                     c = 0
                     for _, r in subset.iterrows():
-                        add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"])
+                        tooling = None
+                        if "Tooling JSON" in subset.columns:
+                            raw_tooling = r.get("Tooling JSON")
+                            if raw_tooling is not None and str(raw_tooling).strip() and str(raw_tooling).strip().lower() != "nan":
+                                try:
+                                    tooling = json.loads(str(raw_tooling))
+                                except Exception:
+                                    st.warning(f"Invalid Tooling JSON for panel '{r['Panel Name']}'. Skipping tooling for this row.")
+                        add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"], tooling=tooling)
                         c += 1
                     if c:
                         st.success(f"Added {c} items")
@@ -623,7 +635,7 @@ with col2:
         st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary")
 
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
-        cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview)
+        cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview, st.session_state['panels'])
         st.download_button("💾 CIX Programs", cix_zip, "nest_cix.zip", "application/zip", type="secondary")
 
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):

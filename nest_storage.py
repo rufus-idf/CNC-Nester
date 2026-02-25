@@ -353,10 +353,73 @@ def _map_template_point_to_sheet(x, y, part, template_w, template_h):
     return part_x + sx, part_y + sy
 
 
-def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=None):
+
+
+def _get_part_tooling_preview(part, template_preview, panel_tooling_by_label):
+    label = str(part.get("rid") or "")
+    tooling = panel_tooling_by_label.get(label) if panel_tooling_by_label else None
+    if isinstance(tooling, dict):
+        return tooling
+    return template_preview or {}
+
+
+def _get_template_sizes_for_part(preview, part_w, part_h):
+    coord_mode = str(preview.get("coord_mode", "absolute")).lower()
+    if coord_mode == "normalized":
+        return 1.0, 1.0
+    template_w = _safe_float(preview.get("panel_width"), part_w)
+    template_h = _safe_float(preview.get("panel_length"), part_h)
+    return template_w, template_h
+
+
+def _get_routing_tool_name(preview):
+    routing = preview.get("routing") if isinstance(preview, dict) else None
+    if isinstance(routing, dict):
+        tool_name = routing.get("tool")
+        if tool_name:
+            return str(tool_name)
+    return "6MM"
+
+
+def _append_routing_macros(program_lines, part_idx, part_name, geo_id, tool_name):
+    program_lines.append(_cix_macro("WFL", {
+        "ID": 9000 + part_idx,
+        "X": 0,
+        "Y": 0,
+        "Z": 0,
+        "AZ": 90,
+        "AR": 0,
+        "UCS": 1,
+        "RV": 0,
+        "FRC": 1,
+    }))
+    program_lines.append("")
+    program_lines.append(_cix_macro("ROUTG", {
+        "LAY": f"Route_{part_name}",
+        "ID": f"R{part_idx}",
+        "GID": geo_id,
+        "Z": 0,
+        "DP": 0,
+        "THR": 1,
+        "CRC": 2,
+        "CKA": 3,
+        "OPT": 1,
+        "RSP": 18000,
+        "WSP": 10000,
+        "DSP": 5000,
+        "TIN": 8,
+        "CIN": 1,
+        "TOU": 8,
+        "COU": 1,
+        "TNM": tool_name,
+        "TOS": 1,
+    }))
+    program_lines.append("")
+
+
+def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=None, panel_tooling_by_label=None):
     template_preview = template_preview or {}
-    template_w = _safe_float(template_preview.get("panel_width"), 0.0)
-    template_h = _safe_float(template_preview.get("panel_length"), 0.0)
+    panel_tooling_by_label = panel_tooling_by_label or {}
 
     program_lines = [
         "BEGIN ID CID3",
@@ -386,9 +449,12 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
         part_y = _safe_float(part.get("y"), 0.0)
         part_label = str(part.get("rid") or f"Part_{part_idx}")
         part_name = _sanitize_cix_name(part_label, fallback=f"PART_{part_idx}")
+        active_preview = _get_part_tooling_preview(part, template_preview, panel_tooling_by_label)
+        template_w, template_h = _get_template_sizes_for_part(active_preview, part_w, part_h)
+        geo_id = f"G{part_name}"
 
         # Nested part perimeter on the sheet (embed the part name in LAY/ID).
-        program_lines.append(_cix_macro("GEO", {"LAY": f"Part_{part_name}", "ID": part_name, "SIDE": 0, "CRN": "2", "RTY": 2}))
+        program_lines.append(_cix_macro("GEO", {"LAY": f"Part_{part_name}", "ID": geo_id, "SIDE": 0, "CRN": "2", "RTY": 2}))
         program_lines.append("")
         program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer 0", "X": part_x, "Y": part_y + part_h}))
         program_lines.append("")
@@ -414,7 +480,7 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
         program_lines.append("")
 
         # Apply template boring operations to each nested part.
-        for boring_idx, boring in enumerate(template_preview.get("borings", []), start=1):
+        for boring_idx, boring in enumerate(active_preview.get("borings", []), start=1):
             bx, by = _map_template_point_to_sheet(
                 boring.get("x", 0),
                 boring.get("y", 0),
@@ -440,7 +506,7 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
             program_lines.append("")
 
         # Apply template toolpath segments to each nested part.
-        for tp_idx, seg in enumerate(template_preview.get("toolpath_segments", []), start=1):
+        for tp_idx, seg in enumerate(active_preview.get("toolpath_segments", []), start=1):
             sx, sy = _map_template_point_to_sheet(seg.get("x1", 0), seg.get("y1", 0), part, template_w, template_h)
             ex, ey = _map_template_point_to_sheet(seg.get("x2", 0), seg.get("y2", 0), part, template_w, template_h)
             program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer TP", "X": sx, "Y": sy}))
@@ -458,13 +524,14 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
             }))
             program_lines.append("")
 
+        _append_routing_macros(program_lines, part_idx, part_name, geo_id, _get_routing_tool_name(active_preview))
         program_lines.append(f"'PART_LABEL={part_label}'")
         program_lines.append("")
 
     return "\n".join(program_lines).strip() + "\n"
 
 
-def create_cix_zip(layout, template_preview=None):
+def create_cix_zip(layout, template_preview=None, panels=None):
     if not layout or not layout.get("sheets"):
         raise ValueError("No layout data available to export CIX")
 
@@ -473,13 +540,19 @@ def create_cix_zip(layout, template_preview=None):
     sheet_w = _safe_float(layout.get("sheet_w"), 2440.0)
     sheet_h = _safe_float(layout.get("sheet_h"), 1220.0)
 
+    panel_tooling_by_label = {}
+    for panel in normalize_panels(panels or []):
+        tooling = panel.get("Tooling")
+        if isinstance(tooling, dict):
+            panel_tooling_by_label[str(panel.get("Label", ""))] = tooling
+
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
         for sheet in layout.get("sheets", []):
             sheet_index = int(sheet.get("sheet_index", 0)) + 1
             parts = sheet.get("parts", [])
             if not parts:
                 continue
-            cix_text = _build_sheet_cix_program(sheet_w, sheet_h, thickness, parts, template_preview=template_preview)
+            cix_text = _build_sheet_cix_program(sheet_w, sheet_h, thickness, parts, template_preview=template_preview, panel_tooling_by_label=panel_tooling_by_label)
             zip_file.writestr(f"Sheet_{sheet_index}.cix", cix_text)
 
     return zip_buffer.getvalue()

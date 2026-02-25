@@ -189,7 +189,38 @@ END MACRO
             "toolpath_segments": [{"x1": 0.0, "y1": 500.0, "x2": 800.0, "y2": 500.0}],
         }
 
-        cix_zip = create_cix_zip(layout, template_preview)
+        panels = [
+            {
+                "Label": "Door A",
+                "Width": 800.0,
+                "Length": 500.0,
+                "Qty": 1,
+                "Grain?": False,
+                "Material": "MDF",
+                "Tooling": {
+                    "coord_mode": "normalized",
+                    "panel_thickness": 18.0,
+                    "toolpath_segments": [
+                        {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 0.0},
+                        {"x1": 1.0, "y1": 0.0, "x2": 1.0, "y2": 1.0},
+                        {"x1": 1.0, "y1": 1.0, "x2": 0.0, "y2": 1.0},
+                        {"x1": 0.0, "y1": 1.0, "x2": 0.0, "y2": 0.0},
+                    ],
+                    "borings": [],
+                    "routing": {"tool": "6MM"},
+                },
+            },
+            {
+                "Label": "Door B",
+                "Width": 400.0,
+                "Length": 250.0,
+                "Qty": 1,
+                "Grain?": False,
+                "Material": "MDF",
+            },
+        ]
+
+        cix_zip = create_cix_zip(layout, template_preview, panels=panels)
 
         with zipfile.ZipFile(io.BytesIO(cix_zip), "r") as zf:
             names = sorted(zf.namelist())
@@ -198,6 +229,9 @@ END MACRO
 
         self.assertIn("LPX=2440", sheet_program)
         self.assertIn("LPY=1220", sheet_program)
+        self.assertIn('PARAM,NAME=TNM,VALUE="6MM"', sheet_program)
+        self.assertIn("PARAM,NAME=X,VALUE=100", sheet_program)
+        self.assertIn("PARAM,NAME=Y,VALUE=200", sheet_program)
 
         # Both parts are represented in one sheet program.
         self.assertIn("'PART_LABEL=Door A'", sheet_program)
@@ -205,15 +239,11 @@ END MACRO
 
         # Part names are embedded in machining macros for CAD visibility.
         self.assertIn('PARAM,NAME=LAY,VALUE="Part_Door_A"', sheet_program)
-        self.assertIn('PARAM,NAME=ID,VALUE="Door_A"', sheet_program)
+        self.assertIn('PARAM,NAME=ID,VALUE="GDoor_A"', sheet_program)
         self.assertIn('PARAM,NAME=LAY,VALUE="Part_Door_B"', sheet_program)
-        self.assertIn('PARAM,NAME=ID,VALUE="Door_B"', sheet_program)
+        self.assertIn('PARAM,NAME=ID,VALUE="GDoor_B"', sheet_program)
 
-        # First part boring at (100,200) + (50,50)
-        self.assertIn("PARAM,NAME=X,VALUE=150", sheet_program)
-        self.assertIn("PARAM,NAME=Y,VALUE=250", sheet_program)
-
-        # Second part boring scales 50,50 on 800x500 -> 25,25 then offset (1000,300)
+        # Door A tooling has no boring ops; Door B falls back to template boring.
         self.assertIn("PARAM,NAME=X,VALUE=1025", sheet_program)
         self.assertIn("PARAM,NAME=Y,VALUE=325", sheet_program)
     def test_dxf_without_payload_raises_error(self):

@@ -2,6 +2,7 @@ import copy
 import csv
 import hashlib
 import io
+import json
 import zipfile
 
 import ezdxf

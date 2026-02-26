@@ -455,21 +455,53 @@ def _transform_template_value(value, template_size, target_size):
     return value_f * (target_size / template_size)
 
 
-def _map_template_point_to_sheet(x, y, part, template_w, template_h):
+def _map_template_point_to_sheet(x, y, part, template_w, template_h, coord_mode="absolute"):
     part_w = _safe_float(part.get("w"), 0.0)
     part_h = _safe_float(part.get("h"), 0.0)
     part_x = _safe_float(part.get("x"), 0.0)
     part_y = _safe_float(part.get("y"), 0.0)
 
-    sx = _transform_template_value(x, template_w, part_w)
-    sy = _transform_template_value(y, template_h, part_h)
+    coord_mode = str(coord_mode or "absolute").lower()
 
-    if part.get("rotated"):
-        # 90° rotation mapping for preview/manual-layout rotated parts.
-        return part_x + (part_w - sy), part_y + sx
-    return part_x + sx, part_y + sy
+    if coord_mode == "normalized":
+        sx = _transform_template_value(x, 1.0, part_w)
+        sy = _transform_template_value(y, 1.0, part_h)
+        if part.get("rotated"):
+            return part_x + (part_w - sy), part_y + sx
+        return part_x + sx, part_y + sy
+
+    # Absolute tooling coordinates: keep tool geometry true to panel dimensions.
+    point_x = _safe_float(x)
+    point_y = _safe_float(y)
+
+    rotated_flag = bool(part.get("rotated"))
+    swapped_dims = (
+        template_w > 0 and template_h > 0 and
+        abs(part_w - template_h) <= 0.01 and
+        abs(part_h - template_w) <= 0.01
+    )
+
+    if rotated_flag or swapped_dims:
+        # 90° clockwise transform from template coordinates into sheet coordinates.
+        return part_x + (part_w - point_y), part_y + point_x
+
+    if template_w > 0 and template_h > 0 and (
+        abs(part_w - template_w) > 0.01 or abs(part_h - template_h) > 0.01
+    ):
+        # Fallback for non-normalized tooling where dimensions don't match exactly.
+        sx = _transform_template_value(point_x, template_w, part_w)
+        sy = _transform_template_value(point_y, template_h, part_h)
+        return part_x + sx, part_y + sy
+
+    return part_x + point_x, part_y + point_y
 
 
+
+def _canonical_part_label(label):
+    value = str(label or "").strip()
+    # UI can append grouping suffixes like "(G)" to repeated labels.
+    value = re.sub(r"\s*\([^)]+\)\s*$", "", value).strip()
+    return value
 
 def _canonical_part_label(label):
     value = str(label or "").strip()
@@ -562,6 +594,7 @@ def build_sheet_boring_points(parts, panel_tooling_by_label=None, template_previ
 
         active_preview = _get_part_tooling_preview(part, template_preview, panel_tooling_by_label)
         template_w, template_h = _get_template_sizes_for_part(active_preview, part_w, part_h)
+        coord_mode = str(active_preview.get("coord_mode", "absolute")).lower()
 
         for boring in active_preview.get("borings", []):
             bx, by = _map_template_point_to_sheet(
@@ -570,6 +603,7 @@ def build_sheet_boring_points(parts, panel_tooling_by_label=None, template_previ
                 part,
                 template_w,
                 template_h,
+                coord_mode=coord_mode,
             )
             points.append({
                 "x": bx,
@@ -615,6 +649,7 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
         part_name = _sanitize_cix_name(part_label, fallback=f"PART_{part_idx}")
         active_preview = _get_part_tooling_preview(part, template_preview, panel_tooling_by_label)
         template_w, template_h = _get_template_sizes_for_part(active_preview, part_w, part_h)
+        coord_mode = str(active_preview.get("coord_mode", "absolute")).lower()
         geo_id = f"G{part_name}"
 
         # Nested part perimeter on the sheet (embed the part name in LAY/ID).
@@ -658,6 +693,7 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
                         part,
                         template_w,
                         template_h,
+                        coord_mode=coord_mode,
                     )
                     program_lines.append(_cix_macro("BG", {
                         "LAY": "Layer 1",
@@ -680,10 +716,18 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
                         part,
                         template_w,
                         template_h,
+                        coord_mode=coord_mode,
                     )
-                    scale_x = (part_w / template_w) if template_w > 0 else 1.0
-                    scale_y = (part_h / template_h) if template_h > 0 else 1.0
-                    radius = _safe_float(operation.get("r", 0.0)) * min(scale_x, scale_y)
+                    if coord_mode == "normalized":
+                        scale_x = part_w
+                        scale_y = part_h
+                        radius = _safe_float(operation.get("r", 0.0)) * min(scale_x, scale_y)
+                    elif template_w > 0 and template_h > 0 and (abs(part_w - template_w) > 0.01 or abs(part_h - template_h) > 0.01) and not (abs(part_w - template_h) <= 0.01 and abs(part_h - template_w) <= 0.01):
+                        scale_x = part_w / template_w
+                        scale_y = part_h / template_h
+                        radius = _safe_float(operation.get("r", 0.0)) * min(scale_x, scale_y)
+                    else:
+                        radius = _safe_float(operation.get("r", 0.0))
                     hole_geo_id = f"{geo_id}_H{op_idx}"
                     program_lines.append(_cix_macro("GEO", {"LAY": "Layer 0", "ID": hole_geo_id, "SIDE": side, "CRN": "1", "RTY": 2, "RV": 1}))
                     program_lines.append("")
@@ -746,8 +790,8 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
 
         # Apply template toolpath segments to each nested part.
         for tp_idx, seg in enumerate(active_preview.get("toolpath_segments", []), start=1):
-            sx, sy = _map_template_point_to_sheet(seg.get("x1", 0), seg.get("y1", 0), part, template_w, template_h)
-            ex, ey = _map_template_point_to_sheet(seg.get("x2", 0), seg.get("y2", 0), part, template_w, template_h)
+            sx, sy = _map_template_point_to_sheet(seg.get("x1", 0), seg.get("y1", 0), part, template_w, template_h, coord_mode=coord_mode)
+            ex, ey = _map_template_point_to_sheet(seg.get("x2", 0), seg.get("y2", 0), part, template_w, template_h, coord_mode=coord_mode)
             program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer TP", "X": sx, "Y": sy}))
             program_lines.append("")
             program_lines.append(_cix_macro("LINE_EP", {

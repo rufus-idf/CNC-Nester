@@ -296,6 +296,29 @@ END MACRO
         self.assertIn('PARAM,NAME=TNM,VALUE="10MM"', sheet_program)
 
 
+    def test_build_sheet_boring_points_handles_absolute_rotated_dimensions_without_scaling(self):
+        parts = [
+            {"rid": "Bed Ends", "x": 1600.0, "y": 10.0, "w": 386.0, "h": 1162.0, "rotated": False},
+        ]
+        tooling_map = {
+            "Bed Ends": {
+                "coord_mode": "absolute",
+                "panel_width": 1162.0,
+                "panel_length": 386.0,
+                "borings": [
+                    {"x": 173.0, "y": 51.5, "tool": "8MMDRILL"},
+                ],
+            }
+        }
+
+        points = build_sheet_boring_points(parts, tooling_map, template_preview={})
+
+        self.assertEqual(len(points), 1)
+        # Rotated-by-dimensions mapping should rotate (not scale) the original coordinates.
+        self.assertAlmostEqual(points[0]["x"], 1934.5)
+        self.assertAlmostEqual(points[0]["y"], 183.0)
+
+
     def test_build_sheet_boring_points_maps_borings_to_nested_part_positions(self):
         parts = [
             {"rid": "Bed Ends", "x": 100.0, "y": 200.0, "w": 400.0, "h": 250.0, "rotated": False},

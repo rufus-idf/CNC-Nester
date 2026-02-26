@@ -206,6 +206,8 @@ def _extract_cix_machining_preview(cix_text):
     borings = []
     toolpath_segments = []
     current_point = None
+    current_geo_id = None
+    geo_anchor_points = {}
 
     for block in macro_blocks:
         name_match = re.search(r'(?im)^\s*NAME\s*=\s*"?([A-Z0-9_]+)"?\s*$', block)
@@ -214,8 +216,15 @@ def _extract_cix_machining_preview(cix_text):
         macro_name = name_match.group(1).upper()
         params = _parse_cix_macro_params(block)
 
-        if macro_name == 'START_POINT':
+        if macro_name == 'GEO':
+            current_geo_id = params.get('ID')
+        elif macro_name == 'START_POINT':
             current_point = (_safe_float(params.get('X')), _safe_float(params.get('Y')))
+            if current_geo_id:
+                geo_anchor_points[current_geo_id] = {
+                    'x': float(current_point[0]),
+                    'y': float(current_point[1]),
+                }
         elif macro_name == 'LINE_EP':
             end_point = (_safe_float(params.get('XE')), _safe_float(params.get('YE')))
             if current_point is not None:
@@ -226,12 +235,24 @@ def _extract_cix_machining_preview(cix_text):
                     'y2': float(end_point[1]),
                 })
             current_point = end_point
-        elif macro_name in {'ENDPATH', 'GEO'}:
+        elif macro_name == 'ENDPATH':
             continue
         elif macro_name == 'BG':
             borings.append({
                 'x': _safe_float(params.get('X')),
                 'y': _safe_float(params.get('Y')),
+                'depth': _safe_float(params.get('DP')),
+                'tool': params.get('TNM', ''),
+                'side': params.get('SIDE', ''),
+            })
+        elif macro_name == 'B_GEO':
+            anchor = geo_anchor_points.get(params.get('GID', ''))
+            if not anchor:
+                continue
+
+            borings.append({
+                'x': anchor['x'],
+                'y': anchor['y'],
                 'depth': _safe_float(params.get('DP')),
                 'tool': params.get('TNM', ''),
                 'side': params.get('SIDE', ''),

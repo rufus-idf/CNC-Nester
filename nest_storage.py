@@ -350,18 +350,6 @@ def _extract_cix_machining_preview(cix_text):
                 'tool': params.get('TNM', ''),
                 'side': int(_safe_float(params.get('SIDE', circle.get('side', 0)), 0)),
             })
-        elif macro_name == 'B_GEO':
-            anchor = geo_anchor_points.get(params.get('GID', ''))
-            if not anchor:
-                continue
-
-            borings.append({
-                'x': anchor['x'],
-                'y': anchor['y'],
-                'depth': _safe_float(params.get('DP')),
-                'tool': params.get('TNM', ''),
-                'side': params.get('SIDE', ''),
-            })
 
     return {
         'toolpath_segments': toolpath_segments,
@@ -483,12 +471,25 @@ def _map_template_point_to_sheet(x, y, part, template_w, template_h):
 
 
 
+def _canonical_part_label(label):
+    value = str(label or "").strip()
+    # UI can append grouping suffixes like "(G)" to repeated labels.
+    value = re.sub(r"\s*\([^)]+\)\s*$", "", value).strip()
+    return value
+
 
 def _get_part_tooling_preview(part, template_preview, panel_tooling_by_label):
     label = str(part.get("rid") or "")
     tooling = panel_tooling_by_label.get(label) if panel_tooling_by_label else None
     if isinstance(tooling, dict):
         return tooling
+
+    canonical_label = _canonical_part_label(label)
+    if panel_tooling_by_label and canonical_label:
+        tooling = panel_tooling_by_label.get(canonical_label)
+        if isinstance(tooling, dict):
+            return tooling
+
     return template_preview or {}
 
 

@@ -240,47 +240,6 @@ END MACRO
         self.assertEqual(op["tool"], "10MM")
         self.assertEqual(op["r"], 8.0)
 
-    def test_cix_import_extracts_b_geo_borings_from_geo_start_points(self):
-        cix_bytes = b"""BEGIN MAINDATA
-LPX=800
-LPY=500
-LPZ=18
-END MAINDATA
-
-BEGIN MACRO
-NAME=GEO
-PARAM,NAME=ID,VALUE="G1001.1016"
-END MACRO
-
-BEGIN MACRO
-NAME=START_POINT
-PARAM,NAME=X,VALUE=734
-PARAM,NAME=Y,VALUE=(136.5)+(0)
-END MACRO
-
-BEGIN MACRO
-NAME=ENDPATH
-END MACRO
-
-BEGIN MACRO
-NAME=B_GEO
-PARAM,NAME=GID,VALUE="G1001.1016"
-PARAM,NAME=DP,VALUE=4
-PARAM,NAME=TNM,VALUE="3MMDRILL"
-PARAM,NAME=SIDE,VALUE=0
-END MACRO
-"""
-
-        payload = cix_to_payload(cix_bytes)
-        parsed = parse_nest_payload(payload)
-
-        self.assertEqual(len(parsed["cix_preview"]["borings"]), 1)
-        boring = parsed["cix_preview"]["borings"][0]
-        self.assertEqual(boring["x"], 734.0)
-        self.assertEqual(boring["y"], 136.5)
-        self.assertEqual(boring["depth"], 4.0)
-        self.assertEqual(boring["tool"], "3MMDRILL")
-
     def test_nest_file_to_payload_routes_cix_by_extension(self):
         cix_bytes = b"LPX=600\nLPY=300\n"
 
@@ -292,6 +251,49 @@ END MACRO
 
 
 
+
+
+    def test_create_cix_zip_matches_grouped_part_labels_to_tooling(self):
+        layout = {
+            "sheet_w": 2440.0,
+            "sheet_h": 1220.0,
+            "sheets": [
+                {
+                    "sheet_index": 0,
+                    "parts": [
+                        {"rid": "Bed Ends(G)", "x": 100.0, "y": 200.0, "w": 1162.0, "h": 386.0, "rotated": False},
+                    ],
+                }
+            ]
+        }
+
+        panels = [
+            {
+                "Label": "Bed Ends",
+                "Width": 1162.0,
+                "Length": 386.0,
+                "Qty": 1,
+                "Grain?": False,
+                "Material": "MDF",
+                "Tooling": {
+                    "coord_mode": "absolute",
+                    "panel_width": 1162.0,
+                    "panel_length": 386.0,
+                    "operations": [
+                        {"type": "B_GEO", "x": 734.0, "y": 136.5, "depth": 4.0, "tool": "3MMDRILL", "side": 0},
+                    ],
+                    "routing": {"tool": "10MM"},
+                },
+            },
+        ]
+
+        cix_zip = create_cix_zip(layout, template_preview={}, panels=panels)
+
+        with zipfile.ZipFile(io.BytesIO(cix_zip), "r") as zf:
+            sheet_program = zf.read("Sheet_1.cix").decode("utf-8")
+
+        self.assertIn('PARAM,NAME=TNM,VALUE="3MMDRILL"', sheet_program)
+        self.assertIn('PARAM,NAME=TNM,VALUE="10MM"', sheet_program)
 
 
     def test_build_sheet_boring_points_maps_borings_to_nested_part_positions(self):

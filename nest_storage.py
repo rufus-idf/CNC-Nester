@@ -252,9 +252,12 @@ def _extract_cix_machining_preview(cix_text):
 
     borings = []
     toolpath_segments = []
+    operations = []
     current_point = None
     current_geo_id = None
+    current_geo_side = 0
     geo_anchor_points = {}
+    geo_circles = {}
 
     for block in macro_blocks:
         name_match = re.search(r'(?im)^\s*NAME\s*=\s*"?([A-Z0-9_]+)"?\s*$', block)
@@ -265,12 +268,14 @@ def _extract_cix_machining_preview(cix_text):
 
         if macro_name == 'GEO':
             current_geo_id = params.get('ID')
+            current_geo_side = int(_safe_float(params.get('SIDE', 0), 0))
         elif macro_name == 'START_POINT':
             current_point = (_safe_float(params.get('X')), _safe_float(params.get('Y')))
             if current_geo_id:
                 geo_anchor_points[current_geo_id] = {
                     'x': float(current_point[0]),
                     'y': float(current_point[1]),
+                    'side': current_geo_side,
                 }
         elif macro_name == 'LINE_EP':
             end_point = (_safe_float(params.get('XE')), _safe_float(params.get('YE')))
@@ -282,15 +287,68 @@ def _extract_cix_machining_preview(cix_text):
                     'y2': float(end_point[1]),
                 })
             current_point = end_point
+        elif macro_name == 'CIRCLE_CR':
+            if current_geo_id:
+                geo_circles[current_geo_id] = {
+                    'xc': _safe_float(params.get('XC')),
+                    'yc': _safe_float(params.get('YC')),
+                    'r': _safe_float(params.get('R')),
+                    'side': current_geo_side,
+                }
         elif macro_name == 'ENDPATH':
             continue
         elif macro_name == 'BG':
-            borings.append({
+            op = {
+                'type': 'BG',
                 'x': _safe_float(params.get('X')),
                 'y': _safe_float(params.get('Y')),
                 'depth': _safe_float(params.get('DP')),
                 'tool': params.get('TNM', ''),
-                'side': params.get('SIDE', ''),
+                'side': int(_safe_float(params.get('SIDE', 0), 0)),
+            }
+            borings.append({
+                'x': op['x'],
+                'y': op['y'],
+                'depth': op['depth'],
+                'tool': op['tool'],
+                'side': op['side'],
+            })
+            operations.append(op)
+        elif macro_name == 'B_GEO':
+            gid = params.get('GID', '')
+            anchor = geo_anchor_points.get(gid)
+            if not anchor:
+                continue
+
+            op = {
+                'type': 'B_GEO',
+                'x': anchor['x'],
+                'y': anchor['y'],
+                'depth': _safe_float(params.get('DP')),
+                'tool': params.get('TNM', ''),
+                'side': int(_safe_float(params.get('SIDE', anchor.get('side', 0)), 0)),
+            }
+            borings.append({
+                'x': op['x'],
+                'y': op['y'],
+                'depth': op['depth'],
+                'tool': op['tool'],
+                'side': op['side'],
+            })
+            operations.append(op)
+        elif macro_name == 'ROUTG':
+            gid = params.get('GID', '')
+            circle = geo_circles.get(gid)
+            if not circle:
+                continue
+            operations.append({
+                'type': 'ROUTG_CIRCLE',
+                'xc': circle['xc'],
+                'yc': circle['yc'],
+                'r': circle['r'],
+                'depth': _safe_float(params.get('DP')),
+                'tool': params.get('TNM', ''),
+                'side': int(_safe_float(params.get('SIDE', circle.get('side', 0)), 0)),
             })
         elif macro_name == 'B_GEO':
             anchor = geo_anchor_points.get(params.get('GID', ''))
@@ -308,7 +366,9 @@ def _extract_cix_machining_preview(cix_text):
     return {
         'toolpath_segments': toolpath_segments,
         'borings': borings,
+        'operations': operations,
     }
+
 
 
 _CIX_DIMENSION_PATTERN = re.compile(r'(?i)(LPX|LPY|LPZ|DX|DY)\s*=\s*"?([0-9]+(?:\.[0-9]+)?)"?')
@@ -363,6 +423,7 @@ def cix_to_payload(cix_bytes):
             "panel_thickness": _safe_float(dimensions.get("LPZ"), 0.0),
             "borings": preview["borings"],
             "toolpath_segments": preview["toolpath_segments"],
+            "operations": preview.get("operations", []),
         },
     }
 
@@ -581,31 +642,106 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
         program_lines.append(_cix_macro("ENDPATH", {}))
         program_lines.append("")
 
-        # Apply template boring operations to each nested part.
-        for boring_idx, boring in enumerate(active_preview.get("borings", []), start=1):
-            bx, by = _map_template_point_to_sheet(
-                boring.get("x", 0),
-                boring.get("y", 0),
-                part,
-                template_w,
-                template_h,
-            )
-            depth = _safe_float(boring.get("depth", 0.0))
-            tool = boring.get("tool") or "DRILL"
-            program_lines.append(_cix_macro("BG", {
-                "LAY": "Layer 1",
-                "ID": f"P{part_idx}_{boring_idx}",
-                "SIDE": int(_safe_float(boring.get("side", 0))),
-                "CRN": "1",
-                "X": bx,
-                "Y": by,
-                "Z": 0,
-                "DP": depth,
-                "TNM": tool,
-                "CKA": 3,
-                "OPT": 1,
-            }))
-            program_lines.append("")
+        operations = active_preview.get("operations") if isinstance(active_preview.get("operations"), list) else []
+        if operations:
+            for op_idx, operation in enumerate(operations, start=1):
+                op_type = str(operation.get("type", "")).upper()
+                tool = operation.get("tool") or "DRILL"
+                depth = _safe_float(operation.get("depth", 0.0))
+                side = int(_safe_float(operation.get("side", 0)))
+
+                if op_type in {"BG", "B_GEO"}:
+                    bx, by = _map_template_point_to_sheet(
+                        operation.get("x", 0),
+                        operation.get("y", 0),
+                        part,
+                        template_w,
+                        template_h,
+                    )
+                    program_lines.append(_cix_macro("BG", {
+                        "LAY": "Layer 1",
+                        "ID": f"P{part_idx}_{op_idx}",
+                        "SIDE": side,
+                        "CRN": "1",
+                        "X": bx,
+                        "Y": by,
+                        "Z": 0,
+                        "DP": depth,
+                        "TNM": tool,
+                        "CKA": 3,
+                        "OPT": 1,
+                    }))
+                    program_lines.append("")
+                elif op_type == "ROUTG_CIRCLE":
+                    cx, cy = _map_template_point_to_sheet(
+                        operation.get("xc", 0),
+                        operation.get("yc", 0),
+                        part,
+                        template_w,
+                        template_h,
+                    )
+                    scale_x = (part_w / template_w) if template_w > 0 else 1.0
+                    scale_y = (part_h / template_h) if template_h > 0 else 1.0
+                    radius = _safe_float(operation.get("r", 0.0)) * min(scale_x, scale_y)
+                    hole_geo_id = f"{geo_id}_H{op_idx}"
+                    program_lines.append(_cix_macro("GEO", {"LAY": "Layer 0", "ID": hole_geo_id, "SIDE": side, "CRN": "1", "RTY": 2, "RV": 1}))
+                    program_lines.append("")
+                    program_lines.append(_cix_macro("CIRCLE_CR", {
+                        "LAY": "Layer 0",
+                        "XC": cx,
+                        "YC": cy,
+                        "R": radius,
+                        "AS": 90,
+                        "DIR": 2,
+                        "FD": 0,
+                        "SP": 0,
+                    }))
+                    program_lines.append("")
+                    program_lines.append(_cix_macro("ENDPATH", {}))
+                    program_lines.append("")
+                    program_lines.append(_cix_macro("ROUTG", {
+                        "LAY": "Layer 0",
+                        "ID": f"R{part_idx}_{op_idx}",
+                        "GID": hole_geo_id,
+                        "Z": 0,
+                        "DP": depth,
+                        "THR": 0,
+                        "CRC": 2,
+                        "CKA": 3,
+                        "OPT": 1,
+                        "RSP": 18000,
+                        "WSP": 6000,
+                        "DSP": 5000,
+                        "TNM": tool,
+                        "TOS": 1,
+                    }))
+                    program_lines.append("")
+        else:
+            # Backward-compatible fallback for tooling JSON that only includes borings.
+            for boring_idx, boring in enumerate(active_preview.get("borings", []), start=1):
+                bx, by = _map_template_point_to_sheet(
+                    boring.get("x", 0),
+                    boring.get("y", 0),
+                    part,
+                    template_w,
+                    template_h,
+                )
+                depth = _safe_float(boring.get("depth", 0.0))
+                tool = boring.get("tool") or "DRILL"
+                program_lines.append(_cix_macro("BG", {
+                    "LAY": "Layer 1",
+                    "ID": f"P{part_idx}_{boring_idx}",
+                    "SIDE": int(_safe_float(boring.get("side", 0))),
+                    "CRN": "1",
+                    "X": bx,
+                    "Y": by,
+                    "Z": 0,
+                    "DP": depth,
+                    "TNM": tool,
+                    "CKA": 3,
+                    "OPT": 1,
+                }))
+                program_lines.append("")
 
         # Apply template toolpath segments to each nested part.
         for tp_idx, seg in enumerate(active_preview.get("toolpath_segments", []), start=1):

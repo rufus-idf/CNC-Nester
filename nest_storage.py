@@ -2,6 +2,8 @@ import json
 import base64
 import io
 import re
+import ast
+import operator
 import zipfile
 from datetime import datetime
 
@@ -193,11 +195,56 @@ def _parse_cix_macro_params(block_text):
     return params
 
 
+_CIX_ALLOWED_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+}
+
+
+def _eval_cix_numeric_expression(value):
+    expression = str(value).strip()
+    if not expression:
+        raise ValueError("Empty expression")
+
+    # Keep the evaluator strict: only simple numeric arithmetic is permitted.
+    if not re.fullmatch(r"[0-9eE+\-*/().\s]+", expression):
+        raise ValueError("Unsupported characters in expression")
+
+    def _eval_node(node):
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, (int, float)):
+                return float(node.value)
+            raise ValueError("Unsupported constant")
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            operand = _eval_node(node.operand)
+            return operand if isinstance(node.op, ast.UAdd) else -operand
+        if isinstance(node, ast.BinOp) and type(node.op) in _CIX_ALLOWED_OPERATORS:
+            left = _eval_node(node.left)
+            right = _eval_node(node.right)
+            return _CIX_ALLOWED_OPERATORS[type(node.op)](left, right)
+        raise ValueError("Unsupported expression")
+
+    tree = ast.parse(expression, mode="eval")
+    return float(_eval_node(tree))
+
+
 def _safe_float(value, default=0.0):
     try:
         return float(value)
     except (TypeError, ValueError):
-        return float(default)
+        pass
+
+    if isinstance(value, str):
+        try:
+            return _eval_cix_numeric_expression(value)
+        except (ValueError, SyntaxError, ZeroDivisionError):
+            pass
+
+    return float(default)
 
 
 def _extract_cix_machining_preview(cix_text):
@@ -206,6 +253,8 @@ def _extract_cix_machining_preview(cix_text):
     borings = []
     toolpath_segments = []
     current_point = None
+    current_geo_id = None
+    geo_anchor_points = {}
 
     for block in macro_blocks:
         name_match = re.search(r'(?im)^\s*NAME\s*=\s*"?([A-Z0-9_]+)"?\s*$', block)
@@ -214,8 +263,15 @@ def _extract_cix_machining_preview(cix_text):
         macro_name = name_match.group(1).upper()
         params = _parse_cix_macro_params(block)
 
-        if macro_name == 'START_POINT':
+        if macro_name == 'GEO':
+            current_geo_id = params.get('ID')
+        elif macro_name == 'START_POINT':
             current_point = (_safe_float(params.get('X')), _safe_float(params.get('Y')))
+            if current_geo_id:
+                geo_anchor_points[current_geo_id] = {
+                    'x': float(current_point[0]),
+                    'y': float(current_point[1]),
+                }
         elif macro_name == 'LINE_EP':
             end_point = (_safe_float(params.get('XE')), _safe_float(params.get('YE')))
             if current_point is not None:
@@ -226,12 +282,24 @@ def _extract_cix_machining_preview(cix_text):
                     'y2': float(end_point[1]),
                 })
             current_point = end_point
-        elif macro_name in {'ENDPATH', 'GEO'}:
+        elif macro_name == 'ENDPATH':
             continue
         elif macro_name == 'BG':
             borings.append({
                 'x': _safe_float(params.get('X')),
                 'y': _safe_float(params.get('Y')),
+                'depth': _safe_float(params.get('DP')),
+                'tool': params.get('TNM', ''),
+                'side': params.get('SIDE', ''),
+            })
+        elif macro_name == 'B_GEO':
+            anchor = geo_anchor_points.get(params.get('GID', ''))
+            if not anchor:
+                continue
+
+            borings.append({
+                'x': anchor['x'],
+                'y': anchor['y'],
                 'depth': _safe_float(params.get('DP')),
                 'tool': params.get('TNM', ''),
                 'side': params.get('SIDE', ''),

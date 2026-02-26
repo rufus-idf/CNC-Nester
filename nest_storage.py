@@ -350,6 +350,18 @@ def _extract_cix_machining_preview(cix_text):
                 'tool': params.get('TNM', ''),
                 'side': int(_safe_float(params.get('SIDE', circle.get('side', 0)), 0)),
             })
+        elif macro_name == 'B_GEO':
+            anchor = geo_anchor_points.get(params.get('GID', ''))
+            if not anchor:
+                continue
+
+            borings.append({
+                'x': anchor['x'],
+                'y': anchor['y'],
+                'depth': _safe_float(params.get('DP')),
+                'tool': params.get('TNM', ''),
+                'side': params.get('SIDE', ''),
+            })
 
     return {
         'toolpath_segments': toolpath_segments,

@@ -109,6 +109,12 @@ def clear_data():
     st.session_state.cix_preview = None
 
 
+@st.cache_data(ttl=120)
+def load_gsheets_catalog():
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    return conn.read()
+
+
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
@@ -509,8 +515,7 @@ with col1:
         if st.button("🔄 Refresh"):
             st.cache_data.clear()
         try:
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            df = conn.read()
+            df = load_gsheets_catalog()
             cols = ["Product Name", "Panel Name", "Material", "Length (mm)", "Width (mm)", "Qty Per Unit"]
             if all(c in df.columns for c in cols):
                 prods = df["Product Name"].dropna().unique()

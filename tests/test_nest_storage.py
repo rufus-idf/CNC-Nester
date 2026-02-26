@@ -156,6 +156,47 @@ END MACRO
         self.assertEqual(len(parsed["cix_preview"]["borings"]), 1)
         self.assertEqual(parsed["cix_preview"]["borings"][0]["tool"], "5MMDRILL")
 
+    def test_cix_import_extracts_b_geo_borings_from_geo_start_points(self):
+        cix_bytes = b"""BEGIN MAINDATA
+LPX=800
+LPY=500
+LPZ=18
+END MAINDATA
+
+BEGIN MACRO
+NAME=GEO
+PARAM,NAME=ID,VALUE="G1001.1016"
+END MACRO
+
+BEGIN MACRO
+NAME=START_POINT
+PARAM,NAME=X,VALUE=734
+PARAM,NAME=Y,VALUE=136.5
+END MACRO
+
+BEGIN MACRO
+NAME=ENDPATH
+END MACRO
+
+BEGIN MACRO
+NAME=B_GEO
+PARAM,NAME=GID,VALUE="G1001.1016"
+PARAM,NAME=DP,VALUE=4
+PARAM,NAME=TNM,VALUE="3MMDRILL"
+PARAM,NAME=SIDE,VALUE=0
+END MACRO
+"""
+
+        payload = cix_to_payload(cix_bytes)
+        parsed = parse_nest_payload(payload)
+
+        self.assertEqual(len(parsed["cix_preview"]["borings"]), 1)
+        boring = parsed["cix_preview"]["borings"][0]
+        self.assertEqual(boring["x"], 734.0)
+        self.assertEqual(boring["y"], 136.5)
+        self.assertEqual(boring["depth"], 4.0)
+        self.assertEqual(boring["tool"], "3MMDRILL")
+
     def test_nest_file_to_payload_routes_cix_by_extension(self):
         cix_bytes = b"LPX=600\nLPY=300\n"
 

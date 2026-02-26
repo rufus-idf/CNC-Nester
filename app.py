@@ -50,6 +50,14 @@ if 'manual_notice' not in st.session_state:
     st.session_state.manual_notice = None
 if 'cix_preview' not in st.session_state:
     st.session_state.cix_preview = None
+if 'last_sheet_preset_applied' not in st.session_state:
+    st.session_state.last_sheet_preset_applied = "Custom"
+
+
+SHEET_PRESETS = {
+    "MDF (2800 x 2070)": (2800.0, 2070.0),
+    "Ply (3050 x 1220)": (3050.0, 1220.0),
+}
 
 
 def apply_pending_loaded_nest():
@@ -67,6 +75,8 @@ def apply_pending_loaded_nest():
     st.session_state.manual_layout = pending.get("manual_layout")
     st.session_state.cix_preview = pending.get("cix_preview")
     st.session_state.manual_layout_draft = None
+    st.session_state.sheet_preset = infer_sheet_preset(pending["sheet_w"], pending["sheet_h"])
+    st.session_state.last_sheet_preset_applied = st.session_state.sheet_preset
 
 
 # --- HELPERS ---
@@ -99,6 +109,12 @@ def clear_data():
     st.session_state.cix_preview = None
 
 
+@st.cache_data(ttl=120)
+def load_gsheets_catalog():
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    return conn.read()
+
+
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
@@ -128,14 +144,23 @@ def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
     return zip_buffer.getvalue()
 
 
-def update_sheet_dims():
-    preset = st.session_state.sheet_preset
-    if preset == "MDF (2800 x 2070)":
-        st.session_state.sheet_w = 2800.0
-        st.session_state.sheet_h = 2070.0
-    elif preset == "Ply (3050 x 1220)":
-        st.session_state.sheet_w = 3050.0
-        st.session_state.sheet_h = 1220.0
+def infer_sheet_preset(sheet_w, sheet_h):
+    for preset, dims in SHEET_PRESETS.items():
+        if (sheet_w, sheet_h) == dims:
+            return preset
+    return "Custom"
+
+
+def sync_sheet_dims_from_preset():
+    preset = st.session_state.get("sheet_preset", "Custom")
+    if st.session_state.get("last_sheet_preset_applied") == preset:
+        return
+
+    dims = SHEET_PRESETS.get(preset)
+    if dims is not None:
+        st.session_state.sheet_w, st.session_state.sheet_h = dims
+
+    st.session_state.last_sheet_preset_applied = preset
 
 
 def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None):
@@ -419,7 +444,8 @@ apply_pending_loaded_nest()
 # --- SIDEBAR ---
 st.sidebar.header("⚙️ Machine Settings")
 MACHINE_TYPE = st.sidebar.selectbox("Machine Type", ["Flat Bed", "Selco"], key="machine_type")
-st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset", on_change=update_sheet_dims)
+st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset")
+sync_sheet_dims_from_preset()
 SHEET_W = st.sidebar.number_input("Sheet Width", key="sheet_w", step=10.0)
 SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
 KERF = st.sidebar.number_input("Kerf", key="kerf")
@@ -489,8 +515,7 @@ with col1:
         if st.button("🔄 Refresh"):
             st.cache_data.clear()
         try:
-            conn = st.connection("gsheets", type=GSheetsConnection)
-            df = conn.read()
+            df = load_gsheets_catalog()
             cols = ["Product Name", "Panel Name", "Material", "Length (mm)", "Width (mm)", "Qty Per Unit"]
             if all(c in df.columns for c in cols):
                 prods = df["Product Name"].dropna().unique()

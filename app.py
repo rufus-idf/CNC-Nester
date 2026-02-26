@@ -307,18 +307,48 @@ def draw_cix_preview(cix_preview):
     for seg in segments:
         ax.plot([seg["x1"], seg["x2"]], [seg["y1"], seg["y2"]], color='#2563eb', linewidth=1.8)
 
+    boring_legend_entries = []
     if borings:
-        xs = [b["x"] for b in borings]
-        ys = [b["y"] for b in borings]
-        ax.scatter(xs, ys, c='#dc2626', s=45, marker='o', edgecolors='white', linewidths=0.8, zorder=3)
+        tool_groups = {}
+        for boring in borings:
+            tool_name = str(boring.get("tool") or "UNKNOWN")
+            tool_groups.setdefault(tool_name, []).append(boring)
 
-    ax.set_title('CIX Machining Preview (Blue = toolpath, Red = boring)')
+        palette = [
+            '#dc2626', '#16a34a', '#f59e0b', '#9333ea', '#0ea5e9',
+            '#e11d48', '#84cc16', '#f97316', '#06b6d4', '#a855f7'
+        ]
+
+        for idx, (tool_name, grouped_borings) in enumerate(sorted(tool_groups.items())):
+            xs = [b["x"] for b in grouped_borings]
+            ys = [b["y"] for b in grouped_borings]
+            color = palette[idx % len(palette)]
+            ax.scatter(
+                xs,
+                ys,
+                c=color,
+                s=48,
+                marker='o',
+                edgecolors='white',
+                linewidths=0.8,
+                zorder=3,
+                label=f"{tool_name} ({len(grouped_borings)})",
+            )
+            boring_legend_entries.append(f"{tool_name}: {len(grouped_borings)}")
+
+        if tool_groups:
+            ax.legend(loc='upper right', fontsize=8, frameon=True)
+
+    ax.set_title('CIX Machining Preview (Blue = route/toolpath, colors = boring tool type)')
     ax.set_xlabel('X (mm)')
     ax.set_ylabel('Y (mm)')
     st.pyplot(fig)
 
     thickness = float(cix_preview.get("panel_thickness", 0.0))
-    st.caption(f"Detected: {len(segments)} toolpath segment(s), {len(borings)} boring operation(s), thickness {thickness:g} mm")
+    detail = f" | {'; '.join(boring_legend_entries)}" if boring_legend_entries else ""
+    st.caption(
+        f"Detected: {len(segments)} toolpath segment(s), {len(borings)} boring operation(s), thickness {thickness:g} mm{detail}"
+    )
 
 
 @st.dialog("Manual Nesting Tuning", width="large")

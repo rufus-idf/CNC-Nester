@@ -2,6 +2,8 @@ import json
 import base64
 import io
 import re
+import ast
+import operator
 import zipfile
 from datetime import datetime
 
@@ -193,11 +195,56 @@ def _parse_cix_macro_params(block_text):
     return params
 
 
+_CIX_ALLOWED_OPERATORS = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
+}
+
+
+def _eval_cix_numeric_expression(value):
+    expression = str(value).strip()
+    if not expression:
+        raise ValueError("Empty expression")
+
+    # Keep the evaluator strict: only simple numeric arithmetic is permitted.
+    if not re.fullmatch(r"[0-9eE+\-*/().\s]+", expression):
+        raise ValueError("Unsupported characters in expression")
+
+    def _eval_node(node):
+        if isinstance(node, ast.Expression):
+            return _eval_node(node.body)
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, (int, float)):
+                return float(node.value)
+            raise ValueError("Unsupported constant")
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            operand = _eval_node(node.operand)
+            return operand if isinstance(node.op, ast.UAdd) else -operand
+        if isinstance(node, ast.BinOp) and type(node.op) in _CIX_ALLOWED_OPERATORS:
+            left = _eval_node(node.left)
+            right = _eval_node(node.right)
+            return _CIX_ALLOWED_OPERATORS[type(node.op)](left, right)
+        raise ValueError("Unsupported expression")
+
+    tree = ast.parse(expression, mode="eval")
+    return float(_eval_node(tree))
+
+
 def _safe_float(value, default=0.0):
     try:
         return float(value)
     except (TypeError, ValueError):
-        return float(default)
+        pass
+
+    if isinstance(value, str):
+        try:
+            return _eval_cix_numeric_expression(value)
+        except (ValueError, SyntaxError, ZeroDivisionError):
+            pass
+
+    return float(default)
 
 
 def _extract_cix_machining_preview(cix_text):

@@ -503,6 +503,12 @@ def _canonical_part_label(label):
     value = re.sub(r"\s*\([^)]+\)\s*$", "", value).strip()
     return value
 
+def _canonical_part_label(label):
+    value = str(label or "").strip()
+    # UI can append grouping suffixes like "(G)" to repeated labels.
+    value = re.sub(r"\s*\([^)]+\)\s*$", "", value).strip()
+    return value
+
 
 def _get_part_tooling_preview(part, template_preview, panel_tooling_by_label):
     label = str(part.get("rid") or "")

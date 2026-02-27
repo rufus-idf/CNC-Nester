@@ -154,7 +154,7 @@ def sync_sheet_dims_from_preset():
 
 def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None):
     selected_sheet = layout["sheets"][selected_sheet_idx]
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(7, 4.2))
     ax.set_xlim(0, layout["sheet_w"])
     ax.set_ylim(0, layout["sheet_h"])
     ax.set_aspect('equal')
@@ -287,7 +287,7 @@ def draw_cix_preview(cix_preview):
     borings = cix_preview.get("borings", [])
     segments = cix_preview.get("toolpath_segments", [])
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(7, 4.2))
     ax.set_xlim(0, panel_w)
     ax.set_ylim(0, panel_h)
     ax.set_aspect('equal')
@@ -500,50 +500,24 @@ def manual_tuning_dialog():
 
 apply_pending_loaded_nest()
 
+# --- SIDEBAR (Input Settings) ---
+st.sidebar.header("⚙️ Machine Settings")
+MACHINE_TYPE = st.sidebar.selectbox("Machine Type", ["Flat Bed", "Selco"], key="machine_type")
+st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset")
+sync_sheet_dims_from_preset()
+SHEET_W = st.sidebar.number_input("Sheet Width", key="sheet_w", step=10.0)
+SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
+KERF = st.sidebar.number_input("Kerf", key="kerf")
+MARGIN = st.sidebar.number_input("Margin", key="margin")
+
 # --- MAIN PAGE ---
 st.title("🪚 CNC Nester Pro (Robust)")
 
 input_tab, result_tab, heat_tab = st.tabs(["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts"])
 
 with input_tab:
-    st.subheader("Machine Settings")
-    ms1, ms2 = st.columns(2)
-    with ms1:
-        MACHINE_TYPE = st.selectbox("Machine Type", ["Flat Bed", "Selco"], key="machine_type")
-        st.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset")
-        sync_sheet_dims_from_preset()
-    with ms2:
-        SHEET_W = st.number_input("Sheet Width", key="sheet_w", step=10.0)
-        SHEET_H = st.number_input("Sheet Height", key="sheet_h", step=10.0)
-        KERF = st.number_input("Kerf", key="kerf")
-        MARGIN = st.number_input("Margin", key="margin")
-
-    st.write("---")
-    st.markdown("### Save / Load Nest")
-    menu_col1, menu_col2, menu_col3 = st.columns([2, 2, 2])
-    with menu_col1:
-        nest_name = st.text_input("Nest Name", value="My Nest")
-    with menu_col2:
-        save_payload = build_nest_payload(
-            nest_name,
-            SHEET_W,
-            SHEET_H,
-            MARGIN,
-            KERF,
-            st.session_state['panels'],
-            st.session_state.manual_layout,
-            MACHINE_TYPE,
-        )
-        st.download_button(
-            "💾 Save Nest",
-            data=payload_to_dxf(save_payload),
-            file_name=f"{nest_name.strip().replace(' ', '_') or 'nest'}.dxf",
-            mime="application/dxf",
-            type="secondary",
-            use_container_width=True,
-        )
-    with menu_col3:
-        uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf", "cix"], accept_multiple_files=False)
+    st.markdown("### Load Nest")
+    uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf", "cix"], accept_multiple_files=False)
 
     loaded_nest_name = st.session_state.pop("loaded_nest_name", None)
     if loaded_nest_name:
@@ -707,12 +681,33 @@ with result_tab:
         st.markdown("### CIX Machining Preview")
         draw_cix_preview(st.session_state.cix_preview)
 
-    export_col1, export_col2 = st.columns(2)
+    export_col0, export_col1, export_col2, export_col3 = st.columns([2, 1, 1, 1])
+    with export_col0:
+        nest_name = st.text_input("Nest Name", value="My Nest", key="nest_name_results")
     with export_col1:
+        save_payload = build_nest_payload(
+            nest_name,
+            st.session_state.sheet_w,
+            st.session_state.sheet_h,
+            st.session_state.margin,
+            st.session_state.kerf,
+            st.session_state['panels'],
+            st.session_state.manual_layout,
+            st.session_state.machine_type,
+        )
+        st.download_button(
+            "💾 Save Nest",
+            data=payload_to_dxf(save_payload),
+            file_name=f"{nest_name.strip().replace(' ', '_') or 'nest'}.dxf",
+            mime="application/dxf",
+            type="secondary",
+            use_container_width=True,
+        )
+    with export_col2:
         if st.session_state.last_packer:
             dxf = create_dxf_zip(st.session_state.last_packer, st.session_state.sheet_w, st.session_state.sheet_h, st.session_state.margin, st.session_state.kerf)
             st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary", use_container_width=True)
-    with export_col2:
+    with export_col3:
         if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
             cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview)
             st.download_button("💾 CIX Programs", cix_zip, "nest_cix.zip", "application/zip", type="secondary", use_container_width=True)
@@ -785,8 +780,8 @@ with heat_tab:
 
             metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
             metrics_col1.metric("Utilization", f"{offcuts['utilization_pct']}%")
-            metrics_col2.metric("Used area", f"{offcuts['used_area']:.0f} mm²")
-            metrics_col3.metric("Waste area", f"{offcuts['waste_area']:.0f} mm²")
+            metrics_col2.metric("Used area", f"{(offcuts['used_area'] / 1_000_000):.2f} m²")
+            metrics_col3.metric("Waste area", f"{(offcuts['waste_area'] / 1_000_000):.2f} m²")
 
             if offcuts["reusable_offcuts"]:
                 st.caption(f"Reusable offcuts found: {len(offcuts['reusable_offcuts'])}")

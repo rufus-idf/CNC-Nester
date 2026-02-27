@@ -379,13 +379,27 @@ def manual_tuning_dialog():
             del st.session_state["manual_part_select"]
         return
 
-    sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in layout["sheets"]]
+    editable_sheets = [
+        (idx, s)
+        for idx, s in enumerate(layout["sheets"])
+        if s.get("parts")
+    ]
+    if not editable_sheets:
+        st.warning("No parts available to tune.")
+        if st.button("Close"):
+            st.session_state.show_manual_tuning = False
+            st.session_state.manual_layout_draft = None
+            st.rerun()
+        return
+
+    sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in editable_sheets]
     selected_sheet_label = st.selectbox("Manual Sheet", sheet_choices, key="manual_sheet_select")
-    selected_sheet_idx = sheet_choices.index(selected_sheet_label)
-    selected_sheet = layout["sheets"][selected_sheet_idx]
+    selected_sheet_option = sheet_choices.index(selected_sheet_label)
+    selected_sheet_idx, selected_sheet = editable_sheets[selected_sheet_option]
 
     part_ids = [p["id"] for p in selected_sheet["parts"]]
     part_label_map = {p["id"]: f"{p['rid']} ({int(p['w'])}x{int(p['h'])})" for p in selected_sheet["parts"]}
+    part_by_id = {p["id"]: p for p in selected_sheet["parts"]}
 
     notice = st.session_state.pop("manual_notice", None)
     if notice:
@@ -416,7 +430,16 @@ def manual_tuning_dialog():
     )
     st.session_state.manual_selected_part_id = selected_part_id
 
-    nudge = st.number_input("Move step (mm)", min_value=1.0, value=10.0, step=1.0, key="manual_nudge")
+    selected_part = part_by_id[selected_part_id]
+    st.caption(
+        f"Selected: {selected_part['rid']} | X={selected_part['x']:.1f}, Y={selected_part['y']:.1f}, "
+        f"W={selected_part['w']:.1f}, H={selected_part['h']:.1f}, Rotated={'Yes' if selected_part.get('rotated') else 'No'}"
+    )
+
+    c_snap, c_nudge = st.columns([1, 2])
+    snap_mode = c_snap.radio("Step preset", options=[1.0, 5.0, 10.0, 25.0], horizontal=True, format_func=lambda v: f"{int(v)} mm", key="manual_step_preset")
+    nudge = c_nudge.number_input("Move step (mm)", min_value=1.0, value=float(snap_mode), step=1.0, key="manual_nudge")
+
     c1, c2, c3, c4, c5 = st.columns(5)
     move_up = c1.button("⬆️ Up")
     move_left = c2.button("⬅️ Left")
@@ -445,13 +468,30 @@ def manual_tuning_dialog():
         st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
 
-    d1, d2 = st.columns(2)
+    st.markdown("##### Move to exact position")
+    x_col, y_col, go_col = st.columns([2, 2, 1])
+    target_x = x_col.number_input("Target X", value=float(selected_part["x"]), step=1.0, key=f"manual_target_x_{selected_part_id}")
+    target_y = y_col.number_input("Target Y", value=float(selected_part["y"]), step=1.0, key=f"manual_target_y_{selected_part_id}")
+    move_to = go_col.button("Move")
+
+    if move_to:
+        dx = float(target_x) - float(selected_part["x"])
+        dy = float(target_y) - float(selected_part["y"])
+        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, dx, dy)
+        st.session_state.manual_notice = ("success" if ok else "error", msg)
+        st.rerun()
+
+    d1, d2, d3 = st.columns(3)
     if d1.button("Apply to Nest", type="primary"):
         st.session_state.manual_layout = copy.deepcopy(st.session_state.manual_layout_draft)
         st.session_state.show_manual_tuning = False
         st.success("Manual tuning applied to current nest.")
         st.rerun()
-    if d2.button("Cancel"):
+    if d2.button("Reset Draft"):
+        st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
+        st.session_state.manual_notice = ("success", "Draft reset to current nest layout")
+        st.rerun()
+    if d3.button("Cancel"):
         st.session_state.show_manual_tuning = False
         st.session_state.manual_layout_draft = None
         if "manual_part_select" in st.session_state:

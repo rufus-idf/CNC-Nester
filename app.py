@@ -556,10 +556,28 @@ with input_tab:
 
                 subset = df[(df["Product Name"] == sel_prod) & (df["Material"].isin(sel_mats))]
 
+                component_marker_cols = [
+                    c for c in subset.columns
+                    if str(c).strip().lower() in {"type", "item type", "part type", "category", "component"}
+                ]
+                filtered_count = 0
+                if component_marker_cols and not subset.empty:
+                    include_mask = pd.Series(True, index=subset.index)
+                    for marker_col in component_marker_cols:
+                        values = subset[marker_col].fillna("").astype(str).str.strip().str.lower()
+                        if str(marker_col).strip().lower() == "component":
+                            include_mask &= ~values.isin(["component", "true", "yes", "1", "y"])
+                        else:
+                            include_mask &= values != "component"
+                    filtered_count = int((~include_mask).sum())
+                    subset = subset[include_mask]
+
                 prev_cols = ["Panel Name", "Material", "Qty Per Unit", "Length (mm)", "Width (mm)"]
                 if "Shopify SKU" in df.columns:
                     prev_cols.insert(0, "Shopify SKU")
                 st.dataframe(subset[prev_cols], hide_index=True)
+                if filtered_count:
+                    st.caption(f"Excluded {filtered_count} component row(s) from import.")
 
                 if st.button("➕ Add Product"):
                     c = 0

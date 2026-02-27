@@ -551,7 +551,10 @@ with input_tab:
                 prods = df["Product Name"].dropna().unique()
                 sel_prod = st.selectbox("Product", prods)
                 qty = st.number_input("Build Qty", 1, 1000, 1)
-                mats = df[df["Product Name"] == sel_prod]["Material"].unique()
+                mats = [
+                    m for m in df[df["Product Name"] == sel_prod]["Material"].dropna().unique().tolist()
+                    if str(m).strip().lower() != "component"
+                ]
                 sel_mats = st.multiselect("Material", mats, default=mats)
 
                 subset = df[(df["Product Name"] == sel_prod) & (df["Material"].isin(sel_mats))]

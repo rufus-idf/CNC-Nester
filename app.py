@@ -260,7 +260,12 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
     chart_df = pd.DataFrame(rows)
     selector = alt.selection_point(fields=["part_id"], name="part_pick")
 
-    chart = (
+    grid_rows = []
+    if selected_part is not None:
+        grid_rows = compute_position_grid(layout, selected_sheet_idx, selected_part_id, overlay_step)
+    grid_df = pd.DataFrame(grid_rows) if grid_rows else pd.DataFrame(columns=["x", "x2", "y", "y2", "is_legal", "reason"])
+
+    parts_chart = (
         alt.Chart(chart_df)
         .mark_rect()
         .encode(
@@ -278,6 +283,8 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
         .properties(width=plot_w, height=plot_h)
     )
 
+    chart = parts_chart
+
     event = st.altair_chart(chart, width="content", on_select="rerun", selection_mode="part_pick")
     st.caption("Tip: click any panel in the diagram to select it. Green zones = legal movement; red zones = blocked.")
 
@@ -291,6 +298,18 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
             ids = picked.get("part_id")
             if isinstance(ids, list) and ids:
                 selected = ids[0]
+
+    target = None
+    if isinstance(event, dict):
+        selection = event.get("selection", {})
+        picked_grid = selection.get("grid_pick", [])
+        if isinstance(picked_grid, list) and picked_grid:
+            target = {"x": float(picked_grid[0].get("x", 0.0)), "y": float(picked_grid[0].get("y", 0.0))}
+        elif isinstance(picked_grid, dict):
+            x = picked_grid.get("x")
+            y = picked_grid.get("y")
+            if isinstance(x, list) and isinstance(y, list) and x and y:
+                target = {"x": float(x[0]), "y": float(y[0])}
 
     if selected not in part_ids:
         selected = None

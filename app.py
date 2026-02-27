@@ -16,7 +16,8 @@ from streamlit_gsheets import GSheetsConnection
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
-from panel_utils import normalize_panels, parse_tooling_json_cell
+from panel_utils import normalize_panels
+from offcut_utils import calculate_sheet_offcuts
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -82,22 +83,11 @@ def apply_pending_loaded_nest():
 # --- HELPERS ---
 
 
-def panel_tooling_map(panels):
-    tooling_map = {}
-    for panel in normalize_panels(panels or []):
-        tooling = panel.get("Tooling")
-        if isinstance(tooling, dict):
-            tooling_map[str(panel.get("Label", ""))] = tooling
-    return tooling_map
-
-
-def add_panel(w, l, q, label, grain, mat, tooling=None):
+def add_panel(w, l, q, label, grain, mat):
     row = {
         "Label": label, "Width": w, "Length": l, "Qty": q,
         "Grain?": grain, "Material": mat
     }
-    if tooling is not None:
-        row["Tooling"] = tooling
     st.session_state['panels'].append(row)
 
 
@@ -389,13 +379,27 @@ def manual_tuning_dialog():
             del st.session_state["manual_part_select"]
         return
 
-    sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in layout["sheets"]]
+    editable_sheets = [
+        (idx, s)
+        for idx, s in enumerate(layout["sheets"])
+        if s.get("parts")
+    ]
+    if not editable_sheets:
+        st.warning("No parts available to tune.")
+        if st.button("Close"):
+            st.session_state.show_manual_tuning = False
+            st.session_state.manual_layout_draft = None
+            st.rerun()
+        return
+
+    sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in editable_sheets]
     selected_sheet_label = st.selectbox("Manual Sheet", sheet_choices, key="manual_sheet_select")
-    selected_sheet_idx = sheet_choices.index(selected_sheet_label)
-    selected_sheet = layout["sheets"][selected_sheet_idx]
+    selected_sheet_option = sheet_choices.index(selected_sheet_label)
+    selected_sheet_idx, selected_sheet = editable_sheets[selected_sheet_option]
 
     part_ids = [p["id"] for p in selected_sheet["parts"]]
     part_label_map = {p["id"]: f"{p['rid']} ({int(p['w'])}x{int(p['h'])})" for p in selected_sheet["parts"]}
+    part_by_id = {p["id"]: p for p in selected_sheet["parts"]}
 
     notice = st.session_state.pop("manual_notice", None)
     if notice:
@@ -426,7 +430,16 @@ def manual_tuning_dialog():
     )
     st.session_state.manual_selected_part_id = selected_part_id
 
-    nudge = st.number_input("Move step (mm)", min_value=1.0, value=10.0, step=1.0, key="manual_nudge")
+    selected_part = part_by_id[selected_part_id]
+    st.caption(
+        f"Selected: {selected_part['rid']} | X={selected_part['x']:.1f}, Y={selected_part['y']:.1f}, "
+        f"W={selected_part['w']:.1f}, H={selected_part['h']:.1f}, Rotated={'Yes' if selected_part.get('rotated') else 'No'}"
+    )
+
+    c_snap, c_nudge = st.columns([1, 2])
+    snap_mode = c_snap.radio("Step preset", options=[1.0, 5.0, 10.0, 25.0], horizontal=True, format_func=lambda v: f"{int(v)} mm", key="manual_step_preset")
+    nudge = c_nudge.number_input("Move step (mm)", min_value=1.0, value=float(snap_mode), step=1.0, key="manual_nudge")
+
     c1, c2, c3, c4, c5 = st.columns(5)
     move_up = c1.button("⬆️ Up")
     move_left = c2.button("⬅️ Left")
@@ -455,13 +468,30 @@ def manual_tuning_dialog():
         st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
 
-    d1, d2 = st.columns(2)
+    st.markdown("##### Move to exact position")
+    x_col, y_col, go_col = st.columns([2, 2, 1])
+    target_x = x_col.number_input("Target X", value=float(selected_part["x"]), step=1.0, key=f"manual_target_x_{selected_part_id}")
+    target_y = y_col.number_input("Target Y", value=float(selected_part["y"]), step=1.0, key=f"manual_target_y_{selected_part_id}")
+    move_to = go_col.button("Move")
+
+    if move_to:
+        dx = float(target_x) - float(selected_part["x"])
+        dy = float(target_y) - float(selected_part["y"])
+        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, dx, dy)
+        st.session_state.manual_notice = ("success" if ok else "error", msg)
+        st.rerun()
+
+    d1, d2, d3 = st.columns(3)
     if d1.button("Apply to Nest", type="primary"):
         st.session_state.manual_layout = copy.deepcopy(st.session_state.manual_layout_draft)
         st.session_state.show_manual_tuning = False
         st.success("Manual tuning applied to current nest.")
         st.rerun()
-    if d2.button("Cancel"):
+    if d2.button("Reset Draft"):
+        st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
+        st.session_state.manual_notice = ("success", "Draft reset to current nest layout")
+        st.rerun()
+    if d3.button("Cancel"):
         st.session_state.show_manual_tuning = False
         st.session_state.manual_layout_draft = None
         if "manual_part_select" in st.session_state:
@@ -564,14 +594,7 @@ with col1:
                 if st.button("➕ Add Product"):
                     c = 0
                     for _, r in subset.iterrows():
-                        tooling = None
-                        if "Tooling JSON" in subset.columns:
-                            raw_tooling = r.get("Tooling JSON")
-                            try:
-                                tooling = parse_tooling_json_cell(raw_tooling)
-                            except ValueError:
-                                st.warning(f"Invalid Tooling JSON for panel '{r['Panel Name']}'. Skipping tooling for this row.")
-                        add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"], tooling=tooling)
+                        add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"])
                         c += 1
                     if c:
                         st.success(f"Added {c} items")
@@ -706,7 +729,7 @@ with col2:
         st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary")
 
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
-        cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview, st.session_state['panels'])
+        cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview)
         st.download_button("💾 CIX Programs", cix_zip, "nest_cix.zip", "application/zip", type="secondary")
 
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
@@ -726,7 +749,32 @@ with col2:
             preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices, key="preview_sheet_select")
             preview_sheet_idx = sheet_choices.index(preview_sheet_label)
             actual_sheet_idx = preview_sheets[preview_sheet_idx][0]
-            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx, panel_tooling_map(st.session_state["panels"]), st.session_state.cix_preview)
+            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx, template_preview=st.session_state.cix_preview)
+
+            st.markdown("#### Offcut Summary")
+            min_offcut_w = st.number_input("Min offcut width (mm)", min_value=0.0, value=120.0, step=10.0, key="min_offcut_w")
+            min_offcut_h = st.number_input("Min offcut height (mm)", min_value=0.0, value=120.0, step=10.0, key="min_offcut_h")
+            min_offcut_area = st.number_input("Min offcut area (mm²)", min_value=0.0, value=25000.0, step=1000.0, key="min_offcut_area")
+
+            selected_sheet = st.session_state.manual_layout["sheets"][actual_sheet_idx]
+            offcuts = calculate_sheet_offcuts(
+                st.session_state.manual_layout,
+                selected_sheet,
+                min_width=min_offcut_w,
+                min_height=min_offcut_h,
+                min_area=min_offcut_area,
+            )
+
+            metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+            metrics_col1.metric("Utilization", f"{offcuts['utilization_pct']}%")
+            metrics_col2.metric("Used area", f"{offcuts['used_area']:.0f} mm²")
+            metrics_col3.metric("Waste area", f"{offcuts['waste_area']:.0f} mm²")
+
+            if offcuts["reusable_offcuts"]:
+                st.caption(f"Reusable offcuts found: {len(offcuts['reusable_offcuts'])}")
+                st.dataframe(pd.DataFrame(offcuts["reusable_offcuts"]), hide_index=True, width="stretch")
+            else:
+                st.caption("No reusable offcuts match current filter thresholds.")
 
         if MACHINE_TYPE == "Flat Bed":
             action_col1, action_col2 = st.columns([1, 2])

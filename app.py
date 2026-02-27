@@ -13,7 +13,8 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
-from manual_tuning_engine import compute_position_grid, legal_bounds
+from manual_tuning_engine import compute_position_grid, legal_bounds, move_part_to
+from manual_tuning_component import manual_tuning_canvas
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
@@ -49,6 +50,8 @@ if 'manual_part_select' not in st.session_state:
     st.session_state.manual_part_select = None
 if 'manual_notice' not in st.session_state:
     st.session_state.manual_notice = None
+if 'manual_canvas_last_event_id' not in st.session_state:
+    st.session_state.manual_canvas_last_event_id = None
 if 'cix_preview' not in st.session_state:
     st.session_state.cix_preview = None
 if 'last_sheet_preset_applied' not in st.session_state:
@@ -181,123 +184,30 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
     part_ids = [p["id"] for p in selected_sheet["parts"]]
     selected_part = next((p for p in selected_sheet["parts"] if p["id"] == selected_part_id), None)
 
-    # Keep geometry accurate by preserving sheet aspect ratio in a bounded viewport.
-    max_plot_w = 1200
-    max_plot_h = 560
-    scale = min(max_plot_w / layout["sheet_w"], max_plot_h / layout["sheet_h"])
-    plot_w = max(600, int(layout["sheet_w"] * scale))
-    plot_h = max(260, int(layout["sheet_h"] * scale))
-
-    rows = []
     grid_rows = []
-    if selected_part is not None:
+    if selected_part_id in part_ids:
         grid_rows = compute_position_grid(layout, selected_sheet_idx, selected_part_id, overlay_step)
-        for idx, cell in enumerate(grid_rows):
-            rows.append(
-                {
-                    "part_id": f"__grid_{idx}",
-                    "kind": "grid",
-                    "x": float(cell["x"]),
-                    "x2": float(cell["x2"]),
-                    "y": float(cell["y"]),
-                    "y2": float(cell["y2"]),
-                    "label": "Legal zone" if cell["is_legal"] else "Blocked zone",
-                    "dims": cell["reason"],
-                    "display_color": "rgba(76, 175, 80, 0.35)" if cell["is_legal"] else "rgba(244, 67, 54, 0.35)",
-                    "stroke_color": "rgba(0,0,0,0)",
-                    "base_stroke": 0,
-                    "zindex": 0,
-                }
-            )
 
-    rows.extend([
-        {
-            "part_id": "__sheet__",
-            "kind": "sheet",
-            "x": 0.0,
-            "x2": float(layout["sheet_w"]),
-            "y": 0.0,
-            "y2": float(layout["sheet_h"]),
-            "label": "Sheet",
-            "dims": f"{int(layout['sheet_w'])}x{int(layout['sheet_h'])}",
-            "display_color": "rgba(238,245,255,0.55)",
-            "stroke_color": "#333",
-            "base_stroke": 2,
-            "zindex": 1,
-        },
-        {
-            "part_id": "__margin__",
-            "kind": "margin",
-            "x": float(layout["margin"]),
-            "x2": float(layout["sheet_w"] - layout["margin"]),
-            "y": float(layout["margin"]),
-            "y2": float(layout["sheet_h"] - layout["margin"]),
-            "label": "Margin",
-            "dims": "",
-            "display_color": "rgba(0,0,0,0)",
-            "stroke_color": "#cc0000",
-            "base_stroke": 2,
-            "zindex": 2,
-        },
-    ])
-
-    for part in selected_sheet["parts"]:
-        rows.append({
-            "part_id": part["id"],
-            "kind": "part",
-            "x": float(part["x"]),
-            "x2": float(part["x"] + part["w"]),
-            "y": float(part["y"]),
-            "y2": float(part["y"] + part["h"]),
-            "label": part["rid"],
-            "dims": f"{int(part['w'])}x{int(part['h'])}",
-            "display_color": "#f39c12" if part["id"] == selected_part_id else ("#2e7d32" if part.get("rotated") else "#4a90e2"),
-            "stroke_color": "#222",
-            "base_stroke": 1,
-            "zindex": 3,
-        })
-
-    chart_df = pd.DataFrame(rows)
-    selector = alt.selection_point(fields=["part_id"], name="part_pick")
-
-    grid_rows = []
-    if selected_part is not None:
-        grid_rows = compute_position_grid(layout, selected_sheet_idx, selected_part_id, overlay_step)
-    grid_df = pd.DataFrame(grid_rows) if grid_rows else pd.DataFrame(columns=["x", "x2", "y", "y2", "is_legal", "reason"])
-
-    parts_chart = (
-        alt.Chart(chart_df)
-        .mark_rect()
-        .encode(
-            x=alt.X("x:Q", scale=alt.Scale(domain=[0, layout["sheet_w"]]), axis=None),
-            x2="x2:Q",
-            y=alt.Y("y:Q", scale=alt.Scale(domain=[0, layout["sheet_h"]]), axis=None),
-            y2="y2:Q",
-            color=alt.Color("display_color:N", scale=None, legend=None),
-            stroke=alt.Color("stroke_color:N", scale=None, legend=None),
-            strokeWidth=alt.condition(selector, alt.value(4), alt.value(1)),
-            tooltip=["label:N", "dims:N", "part_id:N"],
-            order=alt.Order("zindex:Q", sort="ascending"),
-        )
-        .add_params(selector)
-        .properties(width=plot_w, height=plot_h)
+    event = manual_tuning_canvas(
+        layout=layout,
+        selected_sheet_idx=selected_sheet_idx,
+        selected_part_id=selected_part_id,
+        grid_rows=grid_rows,
+        key=f"manual_canvas_{selected_sheet_idx}",
     )
 
-    chart = parts_chart
-
-    event = st.altair_chart(chart, width="content", on_select="rerun", selection_mode="part_pick")
-    st.caption("Tip: click any panel in the diagram to select it. Green zones = legal movement; red zones = blocked.")
-
     selected = None
+    move_event = None
     if isinstance(event, dict):
-        selection = event.get("selection", {})
-        picked = selection.get("part_pick", [])
-        if isinstance(picked, list) and picked:
-            selected = picked[0].get("part_id")
-        elif isinstance(picked, dict):
-            ids = picked.get("part_id")
-            if isinstance(ids, list) and ids:
-                selected = ids[0]
+        if event.get("type") == "select":
+            selected = event.get("part_id")
+        elif event.get("type") == "move":
+            move_event = {
+                "part_id": event.get("part_id"),
+                "x": float(event.get("x", 0.0)),
+                "y": float(event.get("y", 0.0)),
+                "event_id": event.get("event_id"),
+            }
 
     target = None
     if isinstance(event, dict):
@@ -314,10 +224,9 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
     if selected not in part_ids:
         selected = None
 
-    grid_df = pd.DataFrame(grid_rows) if grid_rows else pd.DataFrame(columns=["is_legal"])
-    legal_count = int(grid_df["is_legal"].sum()) if not grid_df.empty else 0
-    blocked_count = int((~grid_df["is_legal"]).sum()) if not grid_df.empty else 0
-    return selected, legal_count, blocked_count
+    legal_count = sum(1 for r in grid_rows if r.get("is_legal"))
+    blocked_count = len(grid_rows) - legal_count
+    return selected, move_event, legal_count, blocked_count
 
 
 
@@ -458,7 +367,7 @@ def manual_tuning_dialog():
     if st.session_state.manual_selected_part_id not in part_ids:
         st.session_state.manual_selected_part_id = part_ids[0]
 
-    clicked_part_id, legal_cells, blocked_cells = draw_interactive_layout(
+    clicked_part_id, move_event, legal_cells, blocked_cells = draw_interactive_layout(
         layout,
         selected_sheet_idx,
         st.session_state.manual_selected_part_id,
@@ -468,6 +377,22 @@ def manual_tuning_dialog():
         st.session_state.manual_selected_part_id = clicked_part_id
         st.session_state.manual_part_select = clicked_part_id
         st.rerun()
+
+    if move_event and move_event.get("part_id") in part_ids:
+        event_id = move_event.get("event_id")
+        if event_id and event_id == st.session_state.get("manual_canvas_last_event_id"):
+            pass
+        else:
+            st.session_state.manual_canvas_last_event_id = event_id
+            st.session_state.manual_layout_draft, ok, msg = move_part_to(
+                layout,
+                selected_sheet_idx,
+                move_event["part_id"],
+                move_event["x"],
+                move_event["y"],
+            )
+            st.session_state.manual_notice = ("success" if ok else "error", msg)
+            st.rerun()
 
     if st.session_state.get("manual_part_select") not in part_ids:
         st.session_state.manual_part_select = st.session_state.manual_selected_part_id
@@ -527,8 +452,8 @@ def manual_tuning_dialog():
 
     st.markdown("##### Mouse placement")
     st.caption(
-        "Direct drag/click-to-place is temporarily disabled for Streamlit compatibility. "
-        "Use the direction controls to move parts by the selected step."
+        "Click a panel to select it, then drag it on the canvas. "
+        "Green zones are valid; red zones are blocked. Use arrow controls for precise nudging."
     )
 
     d1, d2, d3 = st.columns(3)

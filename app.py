@@ -1,5 +1,4 @@
 import copy
-import csv
 import hashlib
 import io
 import json
@@ -16,7 +15,8 @@ from streamlit_gsheets import GSheetsConnection
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
-from panel_utils import normalize_panels, parse_tooling_json_cell
+from panel_utils import normalize_panels
+from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -82,22 +82,11 @@ def apply_pending_loaded_nest():
 # --- HELPERS ---
 
 
-def panel_tooling_map(panels):
-    tooling_map = {}
-    for panel in normalize_panels(panels or []):
-        tooling = panel.get("Tooling")
-        if isinstance(tooling, dict):
-            tooling_map[str(panel.get("Label", ""))] = tooling
-    return tooling_map
-
-
-def add_panel(w, l, q, label, grain, mat, tooling=None):
+def add_panel(w, l, q, label, grain, mat):
     row = {
         "Label": label, "Width": w, "Length": l, "Qty": q,
         "Grain?": grain, "Material": mat
     }
-    if tooling is not None:
-        row["Tooling"] = tooling
     st.session_state['panels'].append(row)
 
 
@@ -165,7 +154,7 @@ def sync_sheet_dims_from_preset():
 
 def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None):
     selected_sheet = layout["sheets"][selected_sheet_idx]
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(5.0, 3.0))
     ax.set_xlim(0, layout["sheet_w"])
     ax.set_ylim(0, layout["sheet_h"])
     ax.set_aspect('equal')
@@ -298,7 +287,7 @@ def draw_cix_preview(cix_preview):
     borings = cix_preview.get("borings", [])
     segments = cix_preview.get("toolpath_segments", [])
 
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(7, 4.2))
     ax.set_xlim(0, panel_w)
     ax.set_ylim(0, panel_h)
     ax.set_aspect('equal')
@@ -389,13 +378,27 @@ def manual_tuning_dialog():
             del st.session_state["manual_part_select"]
         return
 
-    sheet_choices = [f"Sheet {s['sheet_index'] + 1}" for s in layout["sheets"]]
+    editable_sheets = [
+        (idx, s)
+        for idx, s in enumerate(layout["sheets"])
+        if s.get("parts")
+    ]
+    if not editable_sheets:
+        st.warning("No parts available to tune.")
+        if st.button("Close"):
+            st.session_state.show_manual_tuning = False
+            st.session_state.manual_layout_draft = None
+            st.rerun()
+        return
+
+    sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in editable_sheets]
     selected_sheet_label = st.selectbox("Manual Sheet", sheet_choices, key="manual_sheet_select")
-    selected_sheet_idx = sheet_choices.index(selected_sheet_label)
-    selected_sheet = layout["sheets"][selected_sheet_idx]
+    selected_sheet_option = sheet_choices.index(selected_sheet_label)
+    selected_sheet_idx, selected_sheet = editable_sheets[selected_sheet_option]
 
     part_ids = [p["id"] for p in selected_sheet["parts"]]
     part_label_map = {p["id"]: f"{p['rid']} ({int(p['w'])}x{int(p['h'])})" for p in selected_sheet["parts"]}
+    part_by_id = {p["id"]: p for p in selected_sheet["parts"]}
 
     notice = st.session_state.pop("manual_notice", None)
     if notice:
@@ -426,7 +429,16 @@ def manual_tuning_dialog():
     )
     st.session_state.manual_selected_part_id = selected_part_id
 
-    nudge = st.number_input("Move step (mm)", min_value=1.0, value=10.0, step=1.0, key="manual_nudge")
+    selected_part = part_by_id[selected_part_id]
+    st.caption(
+        f"Selected: {selected_part['rid']} | X={selected_part['x']:.1f}, Y={selected_part['y']:.1f}, "
+        f"W={selected_part['w']:.1f}, H={selected_part['h']:.1f}, Rotated={'Yes' if selected_part.get('rotated') else 'No'}"
+    )
+
+    c_snap, c_nudge = st.columns([1, 2])
+    snap_mode = c_snap.radio("Step preset", options=[1.0, 5.0, 10.0, 25.0], horizontal=True, format_func=lambda v: f"{int(v)} mm", key="manual_step_preset")
+    nudge = c_nudge.number_input("Move step (mm)", min_value=1.0, value=float(snap_mode), step=1.0, key="manual_nudge")
+
     c1, c2, c3, c4, c5 = st.columns(5)
     move_up = c1.button("⬆️ Up")
     move_left = c2.button("⬅️ Left")
@@ -455,13 +467,30 @@ def manual_tuning_dialog():
         st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
 
-    d1, d2 = st.columns(2)
+    st.markdown("##### Move to exact position")
+    x_col, y_col, go_col = st.columns([2, 2, 1])
+    target_x = x_col.number_input("Target X", value=float(selected_part["x"]), step=1.0, key=f"manual_target_x_{selected_part_id}")
+    target_y = y_col.number_input("Target Y", value=float(selected_part["y"]), step=1.0, key=f"manual_target_y_{selected_part_id}")
+    move_to = go_col.button("Move")
+
+    if move_to:
+        dx = float(target_x) - float(selected_part["x"])
+        dy = float(target_y) - float(selected_part["y"])
+        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, dx, dy)
+        st.session_state.manual_notice = ("success" if ok else "error", msg)
+        st.rerun()
+
+    d1, d2, d3 = st.columns(3)
     if d1.button("Apply to Nest", type="primary"):
         st.session_state.manual_layout = copy.deepcopy(st.session_state.manual_layout_draft)
         st.session_state.show_manual_tuning = False
         st.success("Manual tuning applied to current nest.")
         st.rerun()
-    if d2.button("Cancel"):
+    if d2.button("Reset Draft"):
+        st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
+        st.session_state.manual_notice = ("success", "Draft reset to current nest layout")
+        st.rerun()
+    if d3.button("Cancel"):
         st.session_state.show_manual_tuning = False
         st.session_state.manual_layout_draft = None
         if "manual_part_select" in st.session_state:
@@ -471,77 +500,65 @@ def manual_tuning_dialog():
 
 apply_pending_loaded_nest()
 
-# --- SIDEBAR ---
-st.sidebar.header("⚙️ Machine Settings")
-MACHINE_TYPE = st.sidebar.selectbox("Machine Type", ["Flat Bed", "Selco"], key="machine_type")
-st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset")
-sync_sheet_dims_from_preset()
-SHEET_W = st.sidebar.number_input("Sheet Width", key="sheet_w", step=10.0)
-SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
-KERF = st.sidebar.number_input("Kerf", key="kerf")
-MARGIN = st.sidebar.number_input("Margin", key="margin")
-
 # --- MAIN PAGE ---
 st.title("🪚 CNC Nester Pro (Robust)")
 
-st.markdown("### Save / Load Nest")
-menu_col1, menu_col2, menu_col3 = st.columns([2, 2, 2])
-with menu_col1:
-    nest_name = st.text_input("Nest Name", value="My Nest")
-with menu_col2:
-    save_payload = build_nest_payload(
-        nest_name,
-        SHEET_W,
-        SHEET_H,
-        MARGIN,
-        KERF,
-        st.session_state['panels'],
-        st.session_state.manual_layout,
-        MACHINE_TYPE,
-    )
-    st.download_button(
-        "💾 Save Nest",
-        data=payload_to_dxf(save_payload),
-        file_name=f"{nest_name.strip().replace(' ', '_') or 'nest'}.dxf",
-        mime="application/dxf",
-        type="secondary",
-        use_container_width=True,
-    )
-with menu_col3:
+active_page = st.radio(
+    "Section",
+    ["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts"],
+    horizontal=True,
+    label_visibility="collapsed",
+)
+
+if active_page == "1️⃣ Input":
+    st.sidebar.header("⚙️ Machine Settings")
+    MACHINE_TYPE = st.sidebar.selectbox("Machine Type", ["Flat Bed", "Selco"], key="machine_type")
+    st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset")
+    sync_sheet_dims_from_preset()
+    SHEET_W = st.sidebar.number_input("Sheet Width", key="sheet_w", step=10.0)
+    SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
+    KERF = st.sidebar.number_input("Kerf", key="kerf")
+    MARGIN = st.sidebar.number_input("Margin", key="margin")
+else:
+    st.markdown("""
+    <style>
+    [data-testid="stSidebar"], [data-testid="collapsedControl"] {display: none !important;}
+    </style>
+    """, unsafe_allow_html=True)
+    MACHINE_TYPE = st.session_state.machine_type
+    SHEET_W = st.session_state.sheet_w
+    SHEET_H = st.session_state.sheet_h
+    KERF = st.session_state.kerf
+    MARGIN = st.session_state.margin
+
+if active_page == "1️⃣ Input":
+    st.markdown("### Load Nest")
     uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf", "cix"], accept_multiple_files=False)
 
-loaded_nest_name = st.session_state.pop("loaded_nest_name", None)
-if loaded_nest_name:
-    st.success(f"Loaded nest: {loaded_nest_name}")
+    loaded_nest_name = st.session_state.pop("loaded_nest_name", None)
+    if loaded_nest_name:
+        st.success(f"Loaded nest: {loaded_nest_name}")
 
-if uploaded_nest is None:
-    st.session_state.pop("last_loaded_nest_signature", None)
-else:
-    file_bytes = uploaded_nest.getvalue()
-    upload_signature = f"{uploaded_nest.name}:{len(file_bytes)}:{hashlib.md5(file_bytes).hexdigest()}"
-    if st.session_state.get("last_loaded_nest_signature") != upload_signature:
-        try:
-            payload = nest_file_to_payload(uploaded_nest.name, file_bytes)
-            loaded = parse_nest_payload(payload)
-            st.session_state["pending_loaded_nest"] = loaded
-            st.session_state["last_loaded_nest_signature"] = upload_signature
-            st.rerun()
-        except Exception as e:
-            st.error(f"Failed to load nest file: {e}")
+    if uploaded_nest is None:
+        st.session_state.pop("last_loaded_nest_signature", None)
+    else:
+        file_bytes = uploaded_nest.getvalue()
+        upload_signature = f"{uploaded_nest.name}:{len(file_bytes)}:{hashlib.md5(file_bytes).hexdigest()}"
+        if st.session_state.get("last_loaded_nest_signature") != upload_signature:
+            try:
+                payload = nest_file_to_payload(uploaded_nest.name, file_bytes)
+                loaded = parse_nest_payload(payload)
+                st.session_state["pending_loaded_nest"] = loaded
+                st.session_state["last_loaded_nest_signature"] = upload_signature
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to load nest file: {e}")
 
+    st.write("---")
+    st.subheader("Input")
+    input_tabs = st.tabs(["☁️ G-Sheets", "Manual"])
 
-if st.session_state.cix_preview:
-    st.markdown("### CIX Machining Preview")
-    draw_cix_preview(st.session_state.cix_preview)
-
-st.write("---")
-col1, col2 = st.columns([1, 2])
-
-with col1:
-    st.subheader("1. Input")
-    tab1, tab2, tab3 = st.tabs(["☁️ G-Sheets", "Manual", "Paste"])
-
-    with tab1:
+    with input_tabs[0]:
         if st.button("🔄 Refresh"):
             st.cache_data.clear()
         try:
@@ -564,14 +581,7 @@ with col1:
                 if st.button("➕ Add Product"):
                     c = 0
                     for _, r in subset.iterrows():
-                        tooling = None
-                        if "Tooling JSON" in subset.columns:
-                            raw_tooling = r.get("Tooling JSON")
-                            try:
-                                tooling = parse_tooling_json_cell(raw_tooling)
-                            except ValueError:
-                                st.warning(f"Invalid Tooling JSON for panel '{r['Panel Name']}'. Skipping tooling for this row.")
-                        add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"], tooling=tooling)
+                        add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"])
                         c += 1
                     if c:
                         st.success(f"Added {c} items")
@@ -580,7 +590,7 @@ with col1:
         except Exception as e:
             st.warning(f"Connection error: {e}")
 
-    with tab2:
+    with input_tabs[1]:
         with st.form("man"):
             c1, c2 = st.columns(2)
             w = c1.number_input("W", step=10.0)
@@ -592,23 +602,6 @@ with col1:
             if st.form_submit_button("Add"):
                 add_panel(w, l, q, lbl, g, "Manual")
                 st.success("Added")
-
-    with tab3:
-        pq = st.number_input("Prod Multi", 1)
-        mf = st.text_input("Mat Filter")
-        txt = st.text_area("Paste (Name|Mat|Qty|Len|Wid)")
-        if st.button("Process"):
-            try:
-                f = io.StringIO(txt)
-                rdr = csv.reader(f, delimiter='\t')
-                c = 0
-                for r in rdr:
-                    if len(r) >= 5 and (mf.lower() in r[1].lower()):
-                        add_panel(float(r[4]), float(r[3]), int(r[2]) * pq, r[0], False, r[1])
-                        c += 1
-                st.success(f"Added {c}")
-            except Exception:
-                st.error("Error")
 
     if st.session_state['panels']:
         st.write("---")
@@ -675,9 +668,8 @@ with col1:
             clear_data()
             st.rerun()
 
-with col2:
-    st.subheader("2. Result")
-    if st.button("🚀 RUN SMART NESTING", type="primary"):
+    st.write("---")
+    if st.button("🚀 RUN SMART NESTING", type="primary", use_container_width=True):
         if not st.session_state['panels']:
             st.warning("Empty.")
         else:
@@ -696,23 +688,47 @@ with col2:
             else:
                 st.success(f"Success! All {total_packed} panels nested on {len(packer)} Sheets.")
 
-            # Keep a preview layout for both machine types so Selco results
-            # still render the "3. Nested Result" sheet preview.
             st.session_state.manual_layout = initialize_layout_from_packer(packer, MARGIN, KERF, SHEET_W, SHEET_H)
             st.session_state.manual_layout_draft = None
 
-    if st.session_state.last_packer:
-        dxf = create_dxf_zip(st.session_state.last_packer, SHEET_W, SHEET_H, MARGIN, KERF)
-        st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary")
+if active_page == "2️⃣ Nested Results":
+    st.subheader("Nested Results")
+    if st.session_state.cix_preview:
+        st.markdown("### CIX Machining Preview")
+        draw_cix_preview(st.session_state.cix_preview)
+
+    export_col0, export_col1, export_col2, export_col3 = st.columns([2, 1, 1, 1])
+    with export_col0:
+        nest_name = st.text_input("Nest Name", value="My Nest", key="nest_name_results")
+    with export_col1:
+        save_payload = build_nest_payload(
+            nest_name,
+            st.session_state.sheet_w,
+            st.session_state.sheet_h,
+            st.session_state.margin,
+            st.session_state.kerf,
+            st.session_state['panels'],
+            st.session_state.manual_layout,
+            st.session_state.machine_type,
+        )
+        st.download_button(
+            "💾 Save Nest",
+            data=payload_to_dxf(save_payload),
+            file_name=f"{nest_name.strip().replace(' ', '_') or 'nest'}.dxf",
+            mime="application/dxf",
+            type="secondary",
+            use_container_width=True,
+        )
+    with export_col2:
+        if st.session_state.last_packer:
+            dxf = create_dxf_zip(st.session_state.last_packer, st.session_state.sheet_w, st.session_state.sheet_h, st.session_state.margin, st.session_state.kerf)
+            st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary", use_container_width=True)
+    with export_col3:
+        if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
+            cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview)
+            st.download_button("💾 CIX Programs", cix_zip, "nest_cix.zip", "application/zip", type="secondary", use_container_width=True)
 
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
-        cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview, st.session_state['panels'])
-        st.download_button("💾 CIX Programs", cix_zip, "nest_cix.zip", "application/zip", type="secondary")
-
-    if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
-        st.write("---")
-        st.markdown("### 3. Nested Result")
-
         preview_sheets = [
             (idx, sheet)
             for idx, sheet in enumerate(st.session_state.manual_layout["sheets"])
@@ -723,30 +739,100 @@ with col2:
             st.warning("No previewable sheets were generated.")
         else:
             sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in preview_sheets]
-            preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices, key="preview_sheet_select")
+            preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices, key="preview_sheet_select_results")
             preview_sheet_idx = sheet_choices.index(preview_sheet_label)
             actual_sheet_idx = preview_sheets[preview_sheet_idx][0]
-            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx, panel_tooling_map(st.session_state["panels"]), st.session_state.cix_preview)
+            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx, template_preview=st.session_state.cix_preview)
 
-        if MACHINE_TYPE == "Flat Bed":
+        if st.session_state.machine_type == "Flat Bed":
             action_col1, action_col2 = st.columns([1, 2])
             with action_col1:
                 if st.button("Manual Nesting Tuning"):
-                    if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
-                        st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
-                        first_non_empty_parts = []
-                        for sheet in st.session_state.manual_layout_draft["sheets"]:
-                            if sheet.get("parts"):
-                                first_non_empty_parts = sheet["parts"]
-                                break
-                        st.session_state.manual_selected_part_id = first_non_empty_parts[0]["id"] if first_non_empty_parts else None
-                        st.session_state.manual_part_select = st.session_state.manual_selected_part_id
-                        st.session_state.show_manual_tuning = True
-                        st.rerun()
+                    st.session_state.manual_layout_draft = copy.deepcopy(st.session_state.manual_layout)
+                    first_non_empty_parts = []
+                    for sheet in st.session_state.manual_layout_draft["sheets"]:
+                        if sheet.get("parts"):
+                            first_non_empty_parts = sheet["parts"]
+                            break
+                    st.session_state.manual_selected_part_id = first_non_empty_parts[0]["id"] if first_non_empty_parts else None
+                    st.session_state.manual_part_select = st.session_state.manual_selected_part_id
+                    st.session_state.show_manual_tuning = True
+                    st.rerun()
             with action_col2:
                 st.caption("Manual tuning opens in a popup. Click 'Apply to Nest' to commit your changes.")
         else:
             st.caption("Selco mode: sheet preview only (manual tuning is disabled).")
+    else:
+        st.info("Run nesting from the Input tab to view results.")
+
+if active_page == "3️⃣ Heat Map & Offcuts":
+    st.subheader("Heat Map & Offcut Summary")
+    if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
+        preview_sheets = [
+            (idx, sheet)
+            for idx, sheet in enumerate(st.session_state.manual_layout["sheets"])
+            if sheet.get("parts")
+        ]
+        if not preview_sheets:
+            st.warning("No previewable sheets were generated.")
+        else:
+            sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in preview_sheets]
+            heat_sheet_label = st.selectbox("Sheet for Analysis", sheet_choices, key="preview_sheet_select_heat")
+            heat_sheet_idx = sheet_choices.index(heat_sheet_label)
+            actual_sheet_idx = preview_sheets[heat_sheet_idx][0]
+            selected_sheet = st.session_state.manual_layout["sheets"][actual_sheet_idx]
+
+            min_offcut_w = st.number_input("Min offcut width (mm)", min_value=0.0, value=120.0, step=10.0, key="min_offcut_w")
+            min_offcut_h = st.number_input("Min offcut height (mm)", min_value=0.0, value=120.0, step=10.0, key="min_offcut_h")
+            min_offcut_area = st.number_input("Min offcut area (mm²)", min_value=0.0, value=25000.0, step=1000.0, key="min_offcut_area")
+
+            offcuts = calculate_sheet_offcuts(
+                st.session_state.manual_layout,
+                selected_sheet,
+                min_width=min_offcut_w,
+                min_height=min_offcut_h,
+                min_area=min_offcut_area,
+            )
+
+            metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+            metrics_col1.metric("Utilization", f"{offcuts['utilization_pct']}%")
+            metrics_col2.metric("Used area", f"{(offcuts['used_area'] / 1_000_000):.2f} m²")
+            metrics_col3.metric("Waste area", f"{(offcuts['waste_area'] / 1_000_000):.2f} m²")
+
+            if offcuts["reusable_offcuts"]:
+                st.caption(f"Reusable offcuts found: {len(offcuts['reusable_offcuts'])}")
+                st.dataframe(pd.DataFrame(offcuts["reusable_offcuts"]), hide_index=True, width="stretch")
+            else:
+                st.caption("No reusable offcuts match current filter thresholds.")
+
+            st.markdown("#### Sheet Usage Heat Map")
+            heat_cell = st.number_input("Heat map cell size (mm)", min_value=25.0, value=150.0, step=25.0, key="heatmap_cell_size")
+            heat_rows = build_sheet_usage_heatmap(st.session_state.manual_layout, selected_sheet, cell_size=heat_cell)
+            if heat_rows:
+                heat_df = pd.DataFrame(heat_rows)
+                heat_chart = (
+                    alt.Chart(heat_df)
+                    .mark_rect()
+                    .encode(
+                        x=alt.X("x:Q", title="X (mm)"),
+                        x2="x2:Q",
+                        y=alt.Y("y:Q", title="Y (mm)"),
+                        y2="y2:Q",
+                        color=alt.Color("usage_pct:Q", title="Usage %", scale=alt.Scale(scheme="yelloworangered", domain=[0, 100])),
+                        tooltip=[
+                            alt.Tooltip("x:Q", title="X"),
+                            alt.Tooltip("y:Q", title="Y"),
+                            alt.Tooltip("usage_pct:Q", title="Usage %"),
+                            alt.Tooltip("used_area:Q", title="Used area"),
+                            alt.Tooltip("cell_area:Q", title="Cell area"),
+                        ],
+                    )
+                    .properties(height=360)
+                )
+                st.altair_chart(heat_chart, width="stretch")
+                st.caption("Darker cells are more heavily used by parts; lighter cells indicate likely reclaimable space.")
+    else:
+        st.info("Run nesting from the Input tab to generate offcut and heat map analytics.")
 
 if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()

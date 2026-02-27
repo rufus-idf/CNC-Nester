@@ -206,6 +206,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
                     "display_color": "rgba(76, 175, 80, 0.35)" if cell["is_legal"] else "rgba(244, 67, 54, 0.35)",
                     "stroke_color": "rgba(0,0,0,0)",
                     "base_stroke": 0,
+                    "zindex": 0,
                 }
             )
 
@@ -222,6 +223,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
             "display_color": "rgba(238,245,255,0.55)",
             "stroke_color": "#333",
             "base_stroke": 2,
+            "zindex": 1,
         },
         {
             "part_id": "__margin__",
@@ -235,6 +237,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
             "display_color": "rgba(0,0,0,0)",
             "stroke_color": "#cc0000",
             "base_stroke": 2,
+            "zindex": 2,
         },
     ])
 
@@ -251,6 +254,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
             "display_color": "#f39c12" if part["id"] == selected_part_id else ("#2e7d32" if part.get("rotated") else "#4a90e2"),
             "stroke_color": "#222",
             "base_stroke": 1,
+            "zindex": 3,
         })
 
     chart_df = pd.DataFrame(rows)
@@ -273,7 +277,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
             stroke=alt.Color("stroke_color:N", scale=None, legend=None),
             strokeWidth=alt.condition(selector, alt.value(4), alt.value(1)),
             tooltip=["label:N", "dims:N", "part_id:N"],
-            order=alt.Order("kind:N", sort=["grid", "sheet", "margin", "part"]),
+            order=alt.Order("zindex:Q", sort="ascending"),
         )
         .add_params(selector)
         .properties(width=plot_w, height=plot_h)

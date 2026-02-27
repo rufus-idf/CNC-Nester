@@ -182,6 +182,7 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
 def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     part_ids = [p["id"] for p in selected_sheet["parts"]]
+    selected_part = next((p for p in selected_sheet["parts"] if p["id"] == selected_part_id), None)
 
     grid_rows = []
     if selected_part_id in part_ids:
@@ -207,6 +208,18 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
                 "y": float(event.get("y", 0.0)),
                 "event_id": event.get("event_id"),
             }
+
+    target = None
+    if isinstance(event, dict):
+        selection = event.get("selection", {})
+        picked_grid = selection.get("grid_pick", [])
+        if isinstance(picked_grid, list) and picked_grid:
+            target = {"x": float(picked_grid[0].get("x", 0.0)), "y": float(picked_grid[0].get("y", 0.0))}
+        elif isinstance(picked_grid, dict):
+            x = picked_grid.get("x")
+            y = picked_grid.get("y")
+            if isinstance(x, list) and isinstance(y, list) and x and y:
+                target = {"x": float(x[0]), "y": float(y[0])}
 
     if selected not in part_ids:
         selected = None

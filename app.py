@@ -13,6 +13,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
+from manual_tuning_engine import compute_position_grid, legal_bounds
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
@@ -175,9 +176,10 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
     st.pyplot(fig)
 
 
-def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
+def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     part_ids = [p["id"] for p in selected_sheet["parts"]]
+    selected_part = next((p for p in selected_sheet["parts"] if p["id"] == selected_part_id), None)
 
     # Keep geometry accurate by preserving sheet aspect ratio in a bounded viewport.
     max_plot_w = 1200
@@ -186,7 +188,28 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
     plot_w = max(600, int(layout["sheet_w"] * scale))
     plot_h = max(260, int(layout["sheet_h"] * scale))
 
-    rows = [
+    rows = []
+    grid_rows = []
+    if selected_part is not None:
+        grid_rows = compute_position_grid(layout, selected_sheet_idx, selected_part_id, overlay_step)
+        for idx, cell in enumerate(grid_rows):
+            rows.append(
+                {
+                    "part_id": f"__grid_{idx}",
+                    "kind": "grid",
+                    "x": float(cell["x"]),
+                    "x2": float(cell["x2"]),
+                    "y": float(cell["y"]),
+                    "y2": float(cell["y2"]),
+                    "label": "Legal zone" if cell["is_legal"] else "Blocked zone",
+                    "dims": cell["reason"],
+                    "display_color": "rgba(76, 175, 80, 0.35)" if cell["is_legal"] else "rgba(244, 67, 54, 0.35)",
+                    "stroke_color": "rgba(0,0,0,0)",
+                    "base_stroke": 0,
+                }
+            )
+
+    rows.extend([
         {
             "part_id": "__sheet__",
             "kind": "sheet",
@@ -196,7 +219,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
             "y2": float(layout["sheet_h"]),
             "label": "Sheet",
             "dims": f"{int(layout['sheet_w'])}x{int(layout['sheet_h'])}",
-            "display_color": "#eef5ff",
+            "display_color": "rgba(238,245,255,0.55)",
             "stroke_color": "#333",
             "base_stroke": 2,
         },
@@ -213,7 +236,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
             "stroke_color": "#cc0000",
             "base_stroke": 2,
         },
-    ]
+    ])
 
     for part in selected_sheet["parts"]:
         rows.append({
@@ -243,19 +266,16 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
             y2="y2:Q",
             color=alt.Color("display_color:N", scale=None, legend=None),
             stroke=alt.Color("stroke_color:N", scale=None, legend=None),
-            strokeWidth=alt.condition(
-                selector,
-                alt.value(4),
-                alt.value(1),
-            ),
+            strokeWidth=alt.condition(selector, alt.value(4), alt.value(1)),
             tooltip=["label:N", "dims:N", "part_id:N"],
+            order=alt.Order("kind:N", sort=["grid", "sheet", "margin", "part"]),
         )
         .add_params(selector)
         .properties(width=plot_w, height=plot_h)
     )
 
     event = st.altair_chart(chart, width="content", on_select="rerun", selection_mode="part_pick")
-    st.caption("Tip: click any panel in the diagram to select it for nudging/rotation.")
+    st.caption("Tip: click any panel in the diagram to select it. Green zones = legal movement; red zones = blocked.")
 
     selected = None
     if isinstance(event, dict):
@@ -269,8 +289,12 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
                 selected = ids[0]
 
     if selected not in part_ids:
-        return None
-    return selected
+        selected = None
+
+    grid_df = pd.DataFrame(grid_rows) if grid_rows else pd.DataFrame(columns=["is_legal"])
+    legal_count = int(grid_df["is_legal"].sum()) if not grid_df.empty else 0
+    blocked_count = int((~grid_df["is_legal"]).sum()) if not grid_df.empty else 0
+    return selected, legal_count, blocked_count
 
 
 
@@ -411,7 +435,12 @@ def manual_tuning_dialog():
     if st.session_state.manual_selected_part_id not in part_ids:
         st.session_state.manual_selected_part_id = part_ids[0]
 
-    clicked_part_id = draw_interactive_layout(layout, selected_sheet_idx, st.session_state.manual_selected_part_id)
+    clicked_part_id, legal_cells, blocked_cells = draw_interactive_layout(
+        layout,
+        selected_sheet_idx,
+        st.session_state.manual_selected_part_id,
+        overlay_step=max(10.0, float(st.session_state.get("manual_nudge", 20.0))),
+    )
     if clicked_part_id in part_ids and clicked_part_id != st.session_state.manual_selected_part_id:
         st.session_state.manual_selected_part_id = clicked_part_id
         st.session_state.manual_part_select = clicked_part_id
@@ -435,9 +464,15 @@ def manual_tuning_dialog():
         f"W={selected_part['w']:.1f}, H={selected_part['h']:.1f}, Rotated={'Yes' if selected_part.get('rotated') else 'No'}"
     )
 
-    c_snap, c_nudge = st.columns([1, 2])
-    snap_mode = c_snap.radio("Step preset", options=[1.0, 5.0, 10.0, 25.0], horizontal=True, format_func=lambda v: f"{int(v)} mm", key="manual_step_preset")
-    nudge = c_nudge.number_input("Move step (mm)", min_value=1.0, value=float(snap_mode), step=1.0, key="manual_nudge")
+    bounds = legal_bounds(layout, selected_part)
+    st.caption(
+        "Movement envelope (margin-only): "
+        f"X {bounds['x_min']:.1f}→{bounds['x_max']:.1f}, "
+        f"Y {bounds['y_min']:.1f}→{bounds['y_max']:.1f}. "
+        f"Grid summary: {legal_cells} legal cells, {blocked_cells} blocked cells."
+    )
+
+    nudge = st.number_input("Move step (mm)", min_value=1.0, value=float(st.session_state.get("manual_nudge", 10.0)), step=1.0, key="manual_nudge")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     move_up = c1.button("⬆️ Up")
@@ -467,18 +502,11 @@ def manual_tuning_dialog():
         st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
 
-    st.markdown("##### Move to exact position")
-    x_col, y_col, go_col = st.columns([2, 2, 1])
-    target_x = x_col.number_input("Target X", value=float(selected_part["x"]), step=1.0, key=f"manual_target_x_{selected_part_id}")
-    target_y = y_col.number_input("Target Y", value=float(selected_part["y"]), step=1.0, key=f"manual_target_y_{selected_part_id}")
-    move_to = go_col.button("Move")
-
-    if move_to:
-        dx = float(target_x) - float(selected_part["x"])
-        dy = float(target_y) - float(selected_part["y"])
-        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, dx, dy)
-        st.session_state.manual_notice = ("success" if ok else "error", msg)
-        st.rerun()
+    st.markdown("##### Mouse placement")
+    st.caption(
+        "Direct drag/click-to-place is temporarily disabled for Streamlit compatibility. "
+        "Use the direction controls to move parts by the selected step."
+    )
 
     d1, d2, d3 = st.columns(3)
     if d1.button("Apply to Nest", type="primary"):

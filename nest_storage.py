@@ -503,13 +503,6 @@ def _canonical_part_label(label):
     value = re.sub(r"\s*\([^)]+\)\s*$", "", value).strip()
     return value
 
-def _canonical_part_label(label):
-    value = str(label or "").strip()
-    # UI can append grouping suffixes like "(G)" to repeated labels.
-    value = re.sub(r"\s*\([^)]+\)\s*$", "", value).strip()
-    return value
-
-
 def _get_part_tooling_preview(part, template_preview, panel_tooling_by_label):
     label = str(part.get("rid") or "")
     tooling = panel_tooling_by_label.get(label) if panel_tooling_by_label else None
@@ -579,8 +572,6 @@ def _append_routing_macros(program_lines, part_idx, part_name, geo_id, tool_name
     program_lines.append("")
 
 
-
-
 def build_sheet_boring_points(parts, panel_tooling_by_label=None, template_preview=None):
     panel_tooling_by_label = panel_tooling_by_label or {}
     template_preview = template_preview or {}
@@ -615,9 +606,8 @@ def build_sheet_boring_points(parts, panel_tooling_by_label=None, template_previ
     return points
 
 
-def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=None, panel_tooling_by_label=None):
+def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=None):
     template_preview = template_preview or {}
-    panel_tooling_by_label = panel_tooling_by_label or {}
 
     program_lines = [
         "BEGIN ID CID3",
@@ -647,12 +637,8 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
         part_y = _safe_float(part.get("y"), 0.0)
         part_label = str(part.get("rid") or f"Part_{part_idx}")
         part_name = _sanitize_cix_name(part_label, fallback=f"PART_{part_idx}")
-        active_preview = _get_part_tooling_preview(part, template_preview, panel_tooling_by_label)
-        template_w, template_h = _get_template_sizes_for_part(active_preview, part_w, part_h)
-        coord_mode = str(active_preview.get("coord_mode", "absolute")).lower()
         geo_id = f"G{part_name}"
 
-        # Nested part perimeter on the sheet (embed the part name in LAY/ID).
         program_lines.append(_cix_macro("GEO", {"LAY": f"Part_{part_name}", "ID": geo_id, "SIDE": 0, "CRN": "2", "RTY": 2}))
         program_lines.append("")
         program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer 0", "X": part_x, "Y": part_y + part_h}))
@@ -678,143 +664,14 @@ def _build_sheet_cix_program(sheet_w, sheet_h, panel_t, parts, template_preview=
         program_lines.append(_cix_macro("ENDPATH", {}))
         program_lines.append("")
 
-        operations = active_preview.get("operations") if isinstance(active_preview.get("operations"), list) else []
-        if operations:
-            for op_idx, operation in enumerate(operations, start=1):
-                op_type = str(operation.get("type", "")).upper()
-                tool = operation.get("tool") or "DRILL"
-                depth = _safe_float(operation.get("depth", 0.0))
-                side = int(_safe_float(operation.get("side", 0)))
-
-                if op_type in {"BG", "B_GEO"}:
-                    bx, by = _map_template_point_to_sheet(
-                        operation.get("x", 0),
-                        operation.get("y", 0),
-                        part,
-                        template_w,
-                        template_h,
-                        coord_mode=coord_mode,
-                    )
-                    program_lines.append(_cix_macro("BG", {
-                        "LAY": "Layer 1",
-                        "ID": f"P{part_idx}_{op_idx}",
-                        "SIDE": side,
-                        "CRN": "1",
-                        "X": bx,
-                        "Y": by,
-                        "Z": 0,
-                        "DP": depth,
-                        "TNM": tool,
-                        "CKA": 3,
-                        "OPT": 1,
-                    }))
-                    program_lines.append("")
-                elif op_type == "ROUTG_CIRCLE":
-                    cx, cy = _map_template_point_to_sheet(
-                        operation.get("xc", 0),
-                        operation.get("yc", 0),
-                        part,
-                        template_w,
-                        template_h,
-                        coord_mode=coord_mode,
-                    )
-                    if coord_mode == "normalized":
-                        scale_x = part_w
-                        scale_y = part_h
-                        radius = _safe_float(operation.get("r", 0.0)) * min(scale_x, scale_y)
-                    elif template_w > 0 and template_h > 0 and (abs(part_w - template_w) > 0.01 or abs(part_h - template_h) > 0.01) and not (abs(part_w - template_h) <= 0.01 and abs(part_h - template_w) <= 0.01):
-                        scale_x = part_w / template_w
-                        scale_y = part_h / template_h
-                        radius = _safe_float(operation.get("r", 0.0)) * min(scale_x, scale_y)
-                    else:
-                        radius = _safe_float(operation.get("r", 0.0))
-                    hole_geo_id = f"{geo_id}_H{op_idx}"
-                    program_lines.append(_cix_macro("GEO", {"LAY": "Layer 0", "ID": hole_geo_id, "SIDE": side, "CRN": "1", "RTY": 2, "RV": 1}))
-                    program_lines.append("")
-                    program_lines.append(_cix_macro("CIRCLE_CR", {
-                        "LAY": "Layer 0",
-                        "XC": cx,
-                        "YC": cy,
-                        "R": radius,
-                        "AS": 90,
-                        "DIR": 2,
-                        "FD": 0,
-                        "SP": 0,
-                    }))
-                    program_lines.append("")
-                    program_lines.append(_cix_macro("ENDPATH", {}))
-                    program_lines.append("")
-                    program_lines.append(_cix_macro("ROUTG", {
-                        "LAY": "Layer 0",
-                        "ID": f"R{part_idx}_{op_idx}",
-                        "GID": hole_geo_id,
-                        "Z": 0,
-                        "DP": depth,
-                        "THR": 0,
-                        "CRC": 2,
-                        "CKA": 3,
-                        "OPT": 1,
-                        "RSP": 18000,
-                        "WSP": 6000,
-                        "DSP": 5000,
-                        "TNM": tool,
-                        "TOS": 1,
-                    }))
-                    program_lines.append("")
-        else:
-            # Backward-compatible fallback for tooling JSON that only includes borings.
-            for boring_idx, boring in enumerate(active_preview.get("borings", []), start=1):
-                bx, by = _map_template_point_to_sheet(
-                    boring.get("x", 0),
-                    boring.get("y", 0),
-                    part,
-                    template_w,
-                    template_h,
-                )
-                depth = _safe_float(boring.get("depth", 0.0))
-                tool = boring.get("tool") or "DRILL"
-                program_lines.append(_cix_macro("BG", {
-                    "LAY": "Layer 1",
-                    "ID": f"P{part_idx}_{boring_idx}",
-                    "SIDE": int(_safe_float(boring.get("side", 0))),
-                    "CRN": "1",
-                    "X": bx,
-                    "Y": by,
-                    "Z": 0,
-                    "DP": depth,
-                    "TNM": tool,
-                    "CKA": 3,
-                    "OPT": 1,
-                }))
-                program_lines.append("")
-
-        # Apply template toolpath segments to each nested part.
-        for tp_idx, seg in enumerate(active_preview.get("toolpath_segments", []), start=1):
-            sx, sy = _map_template_point_to_sheet(seg.get("x1", 0), seg.get("y1", 0), part, template_w, template_h, coord_mode=coord_mode)
-            ex, ey = _map_template_point_to_sheet(seg.get("x2", 0), seg.get("y2", 0), part, template_w, template_h, coord_mode=coord_mode)
-            program_lines.append(_cix_macro("START_POINT", {"LAY": "Layer TP", "X": sx, "Y": sy}))
-            program_lines.append("")
-            program_lines.append(_cix_macro("LINE_EP", {
-                "LAY": "Layer TP",
-                "ID": 5000 * part_idx + tp_idx,
-                "XE": ex,
-                "YE": ey,
-                "ZS": 0,
-                "ZE": 0,
-                "FD": 0,
-                "SP": 0,
-                "MVT": 0,
-            }))
-            program_lines.append("")
-
-        _append_routing_macros(program_lines, part_idx, part_name, geo_id, _get_routing_tool_name(active_preview))
+        _append_routing_macros(program_lines, part_idx, part_name, geo_id, _get_routing_tool_name(template_preview))
         program_lines.append(f"'PART_LABEL={part_label}'")
         program_lines.append("")
 
     return "\n".join(program_lines).strip() + "\n"
 
 
-def create_cix_zip(layout, template_preview=None, panels=None):
+def create_cix_zip(layout, template_preview=None):
     if not layout or not layout.get("sheets"):
         raise ValueError("No layout data available to export CIX")
 
@@ -823,19 +680,13 @@ def create_cix_zip(layout, template_preview=None, panels=None):
     sheet_w = _safe_float(layout.get("sheet_w"), 2440.0)
     sheet_h = _safe_float(layout.get("sheet_h"), 1220.0)
 
-    panel_tooling_by_label = {}
-    for panel in normalize_panels(panels or []):
-        tooling = panel.get("Tooling")
-        if isinstance(tooling, dict):
-            panel_tooling_by_label[str(panel.get("Label", ""))] = tooling
-
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
         for sheet in layout.get("sheets", []):
             sheet_index = int(sheet.get("sheet_index", 0)) + 1
             parts = sheet.get("parts", [])
             if not parts:
                 continue
-            cix_text = _build_sheet_cix_program(sheet_w, sheet_h, thickness, parts, template_preview=template_preview, panel_tooling_by_label=panel_tooling_by_label)
+            cix_text = _build_sheet_cix_program(sheet_w, sheet_h, thickness, parts, template_preview=template_preview)
             zip_file.writestr(f"Sheet_{sheet_index}.cix", cix_text)
 
     return zip_buffer.getvalue()

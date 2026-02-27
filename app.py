@@ -277,6 +277,18 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
             if isinstance(ids, list) and ids:
                 selected = ids[0]
 
+    target = None
+    if isinstance(event, dict):
+        selection = event.get("selection", {})
+        picked_grid = selection.get("grid_pick", [])
+        if isinstance(picked_grid, list) and picked_grid:
+            target = {"x": float(picked_grid[0].get("x", 0.0)), "y": float(picked_grid[0].get("y", 0.0))}
+        elif isinstance(picked_grid, dict):
+            x = picked_grid.get("x")
+            y = picked_grid.get("y")
+            if isinstance(x, list) and isinstance(y, list) and x and y:
+                target = {"x": float(x[0]), "y": float(y[0])}
+
     if selected not in part_ids:
         selected = None
     legal_count = int(grid_df["is_legal"].sum()) if not grid_df.empty else 0

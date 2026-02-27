@@ -154,7 +154,7 @@ def sync_sheet_dims_from_preset():
 
 def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None):
     selected_sheet = layout["sheets"][selected_sheet_idx]
-    fig, ax = plt.subplots(figsize=(5.0, 3.0))
+    fig, ax = plt.subplots(figsize=(3.75, 2.25))
     ax.set_xlim(0, layout["sheet_w"])
     ax.set_ylim(0, layout["sheet_h"])
     ax.set_aspect('equal')
@@ -503,35 +503,18 @@ apply_pending_loaded_nest()
 # --- MAIN PAGE ---
 st.title("🪚 CNC Nester Pro (Robust)")
 
-active_page = st.radio(
-    "Section",
-    ["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts"],
-    horizontal=True,
-    label_visibility="collapsed",
-)
+st.sidebar.header("⚙️ Machine Settings")
+MACHINE_TYPE = st.sidebar.selectbox("Machine Type", ["Flat Bed", "Selco"], key="machine_type")
+st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset")
+sync_sheet_dims_from_preset()
+SHEET_W = st.sidebar.number_input("Sheet Width", key="sheet_w", step=10.0)
+SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
+KERF = st.sidebar.number_input("Kerf", key="kerf")
+MARGIN = st.sidebar.number_input("Margin", key="margin")
 
-if active_page == "1️⃣ Input":
-    st.sidebar.header("⚙️ Machine Settings")
-    MACHINE_TYPE = st.sidebar.selectbox("Machine Type", ["Flat Bed", "Selco"], key="machine_type")
-    st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset")
-    sync_sheet_dims_from_preset()
-    SHEET_W = st.sidebar.number_input("Sheet Width", key="sheet_w", step=10.0)
-    SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
-    KERF = st.sidebar.number_input("Kerf", key="kerf")
-    MARGIN = st.sidebar.number_input("Margin", key="margin")
-else:
-    st.markdown("""
-    <style>
-    [data-testid="stSidebar"], [data-testid="collapsedControl"] {display: none !important;}
-    </style>
-    """, unsafe_allow_html=True)
-    MACHINE_TYPE = st.session_state.machine_type
-    SHEET_W = st.session_state.sheet_w
-    SHEET_H = st.session_state.sheet_h
-    KERF = st.session_state.kerf
-    MARGIN = st.session_state.margin
+input_tab, result_tab, heat_tab = st.tabs(["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts"])
 
-if active_page == "1️⃣ Input":
+with input_tab:
     st.markdown("### Load Nest")
     uploaded_nest = st.file_uploader("📂 Load Nest", type=["dxf", "cix"], accept_multiple_files=False)
 
@@ -691,7 +674,7 @@ if active_page == "1️⃣ Input":
             st.session_state.manual_layout = initialize_layout_from_packer(packer, MARGIN, KERF, SHEET_W, SHEET_H)
             st.session_state.manual_layout_draft = None
 
-if active_page == "2️⃣ Nested Results":
+with result_tab:
     st.subheader("Nested Results")
     if st.session_state.cix_preview:
         st.markdown("### CIX Machining Preview")
@@ -765,7 +748,7 @@ if active_page == "2️⃣ Nested Results":
     else:
         st.info("Run nesting from the Input tab to view results.")
 
-if active_page == "3️⃣ Heat Map & Offcuts":
+with heat_tab:
     st.subheader("Heat Map & Offcut Summary")
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
         preview_sheets = [

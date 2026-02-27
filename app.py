@@ -16,7 +16,8 @@ from streamlit_gsheets import GSheetsConnection
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
-from panel_utils import normalize_panels, parse_tooling_json_cell
+from panel_utils import normalize_panels
+from offcut_utils import calculate_sheet_offcuts
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -82,22 +83,11 @@ def apply_pending_loaded_nest():
 # --- HELPERS ---
 
 
-def panel_tooling_map(panels):
-    tooling_map = {}
-    for panel in normalize_panels(panels or []):
-        tooling = panel.get("Tooling")
-        if isinstance(tooling, dict):
-            tooling_map[str(panel.get("Label", ""))] = tooling
-    return tooling_map
-
-
-def add_panel(w, l, q, label, grain, mat, tooling=None):
+def add_panel(w, l, q, label, grain, mat):
     row = {
         "Label": label, "Width": w, "Length": l, "Qty": q,
         "Grain?": grain, "Material": mat
     }
-    if tooling is not None:
-        row["Tooling"] = tooling
     st.session_state['panels'].append(row)
 
 
@@ -564,14 +554,7 @@ with col1:
                 if st.button("➕ Add Product"):
                     c = 0
                     for _, r in subset.iterrows():
-                        tooling = None
-                        if "Tooling JSON" in subset.columns:
-                            raw_tooling = r.get("Tooling JSON")
-                            try:
-                                tooling = parse_tooling_json_cell(raw_tooling)
-                            except ValueError:
-                                st.warning(f"Invalid Tooling JSON for panel '{r['Panel Name']}'. Skipping tooling for this row.")
-                        add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"], tooling=tooling)
+                        add_panel(float(r["Width (mm)"]), float(r["Length (mm)"]), int(r["Qty Per Unit"]) * qty, r["Panel Name"], False, r["Material"])
                         c += 1
                     if c:
                         st.success(f"Added {c} items")
@@ -706,7 +689,7 @@ with col2:
         st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary")
 
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
-        cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview, st.session_state['panels'])
+        cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview)
         st.download_button("💾 CIX Programs", cix_zip, "nest_cix.zip", "application/zip", type="secondary")
 
     if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
@@ -726,7 +709,32 @@ with col2:
             preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices, key="preview_sheet_select")
             preview_sheet_idx = sheet_choices.index(preview_sheet_label)
             actual_sheet_idx = preview_sheets[preview_sheet_idx][0]
-            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx, panel_tooling_map(st.session_state["panels"]), st.session_state.cix_preview)
+            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx, template_preview=st.session_state.cix_preview)
+
+            st.markdown("#### Offcut Summary")
+            min_offcut_w = st.number_input("Min offcut width (mm)", min_value=0.0, value=120.0, step=10.0, key="min_offcut_w")
+            min_offcut_h = st.number_input("Min offcut height (mm)", min_value=0.0, value=120.0, step=10.0, key="min_offcut_h")
+            min_offcut_area = st.number_input("Min offcut area (mm²)", min_value=0.0, value=25000.0, step=1000.0, key="min_offcut_area")
+
+            selected_sheet = st.session_state.manual_layout["sheets"][actual_sheet_idx]
+            offcuts = calculate_sheet_offcuts(
+                st.session_state.manual_layout,
+                selected_sheet,
+                min_width=min_offcut_w,
+                min_height=min_offcut_h,
+                min_area=min_offcut_area,
+            )
+
+            metrics_col1, metrics_col2, metrics_col3 = st.columns(3)
+            metrics_col1.metric("Utilization", f"{offcuts['utilization_pct']}%")
+            metrics_col2.metric("Used area", f"{offcuts['used_area']:.0f} mm²")
+            metrics_col3.metric("Waste area", f"{offcuts['waste_area']:.0f} mm²")
+
+            if offcuts["reusable_offcuts"]:
+                st.caption(f"Reusable offcuts found: {len(offcuts['reusable_offcuts'])}")
+                st.dataframe(pd.DataFrame(offcuts["reusable_offcuts"]), hide_index=True, width="stretch")
+            else:
+                st.caption("No reusable offcuts match current filter thresholds.")
 
         if MACHINE_TYPE == "Flat Bed":
             action_col1, action_col2 = st.columns([1, 2])

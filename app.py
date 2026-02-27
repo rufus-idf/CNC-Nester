@@ -188,7 +188,28 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
     plot_w = max(600, int(layout["sheet_w"] * scale))
     plot_h = max(260, int(layout["sheet_h"] * scale))
 
-    rows = [
+    rows = []
+    grid_rows = []
+    if selected_part is not None:
+        grid_rows = compute_position_grid(layout, selected_sheet_idx, selected_part_id, overlay_step)
+        for idx, cell in enumerate(grid_rows):
+            rows.append(
+                {
+                    "part_id": f"__grid_{idx}",
+                    "kind": "grid",
+                    "x": float(cell["x"]),
+                    "x2": float(cell["x2"]),
+                    "y": float(cell["y"]),
+                    "y2": float(cell["y2"]),
+                    "label": "Legal zone" if cell["is_legal"] else "Blocked zone",
+                    "dims": cell["reason"],
+                    "display_color": "rgba(76, 175, 80, 0.35)" if cell["is_legal"] else "rgba(244, 67, 54, 0.35)",
+                    "stroke_color": "rgba(0,0,0,0)",
+                    "base_stroke": 0,
+                }
+            )
+
+    rows.extend([
         {
             "part_id": "__sheet__",
             "kind": "sheet",
@@ -198,7 +219,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
             "y2": float(layout["sheet_h"]),
             "label": "Sheet",
             "dims": f"{int(layout['sheet_w'])}x{int(layout['sheet_h'])}",
-            "display_color": "#eef5ff",
+            "display_color": "rgba(238,245,255,0.55)",
             "stroke_color": "#333",
             "base_stroke": 2,
         },
@@ -215,7 +236,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
             "stroke_color": "#cc0000",
             "base_stroke": 2,
         },
-    ]
+    ])
 
     for part in selected_sheet["parts"]:
         rows.append({
@@ -250,12 +271,9 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
             y2="y2:Q",
             color=alt.Color("display_color:N", scale=None, legend=None),
             stroke=alt.Color("stroke_color:N", scale=None, legend=None),
-            strokeWidth=alt.condition(
-                selector,
-                alt.value(4),
-                alt.value(1),
-            ),
+            strokeWidth=alt.condition(selector, alt.value(4), alt.value(1)),
             tooltip=["label:N", "dims:N", "part_id:N"],
+            order=alt.Order("kind:N", sort=["grid", "sheet", "margin", "part"]),
         )
         .add_params(selector)
         .properties(width=plot_w, height=plot_h)
@@ -264,7 +282,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
     chart = parts_chart
 
     event = st.altair_chart(chart, width="content", on_select="rerun", selection_mode="part_pick")
-    st.caption("Tip: click any panel in the diagram to select it for nudging/rotation.")
+    st.caption("Tip: click any panel in the diagram to select it. Green zones = legal movement; red zones = blocked.")
 
     selected = None
     if isinstance(event, dict):
@@ -291,6 +309,8 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
 
     if selected not in part_ids:
         selected = None
+
+    grid_df = pd.DataFrame(grid_rows) if grid_rows else pd.DataFrame(columns=["is_legal"])
     legal_count = int(grid_df["is_legal"].sum()) if not grid_df.empty else 0
     blocked_count = int((~grid_df["is_legal"]).sum()) if not grid_df.empty else 0
     return selected, legal_count, blocked_count
@@ -471,9 +491,7 @@ def manual_tuning_dialog():
         f"Grid summary: {legal_cells} legal cells, {blocked_cells} blocked cells."
     )
 
-    c_snap, c_nudge = st.columns([1, 2])
-    snap_mode = c_snap.radio("Step preset", options=[1.0, 5.0, 10.0, 25.0], horizontal=True, format_func=lambda v: f"{int(v)} mm", key="manual_step_preset")
-    nudge = c_nudge.number_input("Move step (mm)", min_value=1.0, value=float(snap_mode), step=1.0, key="manual_nudge")
+    nudge = st.number_input("Move step (mm)", min_value=1.0, value=float(st.session_state.get("manual_nudge", 10.0)), step=1.0, key="manual_nudge")
 
     c1, c2, c3, c4, c5 = st.columns(5)
     move_up = c1.button("⬆️ Up")

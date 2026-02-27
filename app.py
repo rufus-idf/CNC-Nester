@@ -13,6 +13,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
+from manual_tuning_engine import can_place_part_at, compute_position_grid, legal_bounds, move_part_to
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
@@ -175,9 +176,10 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
     st.pyplot(fig)
 
 
-def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
+def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     part_ids = [p["id"] for p in selected_sheet["parts"]]
+    selected_part = next((p for p in selected_sheet["parts"] if p["id"] == selected_part_id), None)
 
     # Keep geometry accurate by preserving sheet aspect ratio in a bounded viewport.
     max_plot_w = 1200
@@ -233,7 +235,27 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
     chart_df = pd.DataFrame(rows)
     selector = alt.selection_point(fields=["part_id"], name="part_pick")
 
-    chart = (
+    grid_rows = []
+    if selected_part is not None:
+        grid_rows = compute_position_grid(layout, selected_sheet_idx, selected_part_id, overlay_step)
+    grid_df = pd.DataFrame(grid_rows) if grid_rows else pd.DataFrame(columns=["x", "x2", "y", "y2", "is_legal", "reason"])
+    grid_selector = alt.selection_point(fields=["x", "y"], name="grid_pick")
+
+    overlays = (
+        alt.Chart(grid_df)
+        .mark_rect(opacity=0.22)
+        .encode(
+            x=alt.X("x:Q", scale=alt.Scale(domain=[0, layout["sheet_w"]]), axis=None),
+            x2="x2:Q",
+            y=alt.Y("y:Q", scale=alt.Scale(domain=[0, layout["sheet_h"]]), axis=None),
+            y2="y2:Q",
+            color=alt.condition("datum.is_legal", alt.value("#7dd87d"), alt.value("#ff8a80")),
+            tooltip=["x:Q", "y:Q", "reason:N"],
+        )
+        .add_params(grid_selector)
+    )
+
+    parts_chart = (
         alt.Chart(chart_df)
         .mark_rect()
         .encode(
@@ -254,6 +276,8 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
         .properties(width=plot_w, height=plot_h)
     )
 
+    chart = (overlays + parts_chart).properties(width=plot_w, height=plot_h)
+
     event = st.altair_chart(chart, width="content", on_select="rerun", selection_mode="part_pick")
     st.caption("Tip: click any panel in the diagram to select it for nudging/rotation.")
 
@@ -268,9 +292,21 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id):
             if isinstance(ids, list) and ids:
                 selected = ids[0]
 
+    target = None
+    if isinstance(event, dict):
+        selection = event.get("selection", {})
+        picked_grid = selection.get("grid_pick", [])
+        if isinstance(picked_grid, list) and picked_grid:
+            target = {"x": float(picked_grid[0].get("x", 0.0)), "y": float(picked_grid[0].get("y", 0.0))}
+        elif isinstance(picked_grid, dict):
+            x = picked_grid.get("x")
+            y = picked_grid.get("y")
+            if isinstance(x, list) and isinstance(y, list) and x and y:
+                target = {"x": float(x[0]), "y": float(y[0])}
+
     if selected not in part_ids:
-        return None
-    return selected
+        selected = None
+    return selected, target
 
 
 
@@ -411,7 +447,12 @@ def manual_tuning_dialog():
     if st.session_state.manual_selected_part_id not in part_ids:
         st.session_state.manual_selected_part_id = part_ids[0]
 
-    clicked_part_id = draw_interactive_layout(layout, selected_sheet_idx, st.session_state.manual_selected_part_id)
+    clicked_part_id, drop_target = draw_interactive_layout(
+        layout,
+        selected_sheet_idx,
+        st.session_state.manual_selected_part_id,
+        overlay_step=max(10.0, float(st.session_state.get("manual_nudge", 20.0))),
+    )
     if clicked_part_id in part_ids and clicked_part_id != st.session_state.manual_selected_part_id:
         st.session_state.manual_selected_part_id = clicked_part_id
         st.session_state.manual_part_select = clicked_part_id
@@ -433,6 +474,14 @@ def manual_tuning_dialog():
     st.caption(
         f"Selected: {selected_part['rid']} | X={selected_part['x']:.1f}, Y={selected_part['y']:.1f}, "
         f"W={selected_part['w']:.1f}, H={selected_part['h']:.1f}, Rotated={'Yes' if selected_part.get('rotated') else 'No'}"
+    )
+
+    bounds = legal_bounds(layout, selected_part)
+    st.caption(
+        "Movement envelope (margin-only): "
+        f"X {bounds['x_min']:.1f}→{bounds['x_max']:.1f}, "
+        f"Y {bounds['y_min']:.1f}→{bounds['y_max']:.1f}. "
+        "Green overlay = legal positions, red = blocked (kerf/margin)."
     )
 
     c_snap, c_nudge = st.columns([1, 2])
@@ -467,16 +516,28 @@ def manual_tuning_dialog():
         st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
 
-    st.markdown("##### Move to exact position")
-    x_col, y_col, go_col = st.columns([2, 2, 1])
-    target_x = x_col.number_input("Target X", value=float(selected_part["x"]), step=1.0, key=f"manual_target_x_{selected_part_id}")
-    target_y = y_col.number_input("Target Y", value=float(selected_part["y"]), step=1.0, key=f"manual_target_y_{selected_part_id}")
-    move_to = go_col.button("Move")
+    st.markdown("##### Mouse placement")
+    if drop_target:
+        ok_preview, preview_msg = can_place_part_at(layout, selected_sheet_idx, selected_part_id, drop_target["x"], drop_target["y"])
+        icon = "✅" if ok_preview else "⚠️"
+        st.caption(f"{icon} Target at X={drop_target['x']:.1f}, Y={drop_target['y']:.1f}: {preview_msg}")
+        if st.button("Move selected panel to clicked target", type="secondary"):
+            st.session_state.manual_layout_draft, ok, msg = move_part_to(
+                layout,
+                selected_sheet_idx,
+                selected_part_id,
+                drop_target["x"],
+                drop_target["y"],
+            )
+            st.session_state.manual_notice = ("success" if ok else "error", msg)
+            st.rerun()
+    else:
+        st.caption("Click a green/red grid cell to choose a target location for the selected panel.")
 
-    if move_to:
-        dx = float(target_x) - float(selected_part["x"])
-        dy = float(target_y) - float(selected_part["y"])
-        st.session_state.manual_layout_draft, ok, msg = move_part(layout, selected_sheet_idx, selected_part_id, dx, dy)
+    if st.button("Try center legal position"):
+        center_x = (bounds["x_min"] + bounds["x_max"]) / 2
+        center_y = (bounds["y_min"] + bounds["y_max"]) / 2
+        st.session_state.manual_layout_draft, ok, msg = move_part_to(layout, selected_sheet_idx, selected_part_id, center_x, center_y)
         st.session_state.manual_notice = ("success" if ok else "error", msg)
         st.rerun()
 

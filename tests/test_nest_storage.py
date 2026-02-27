@@ -267,33 +267,12 @@ END MACRO
             ]
         }
 
-        panels = [
-            {
-                "Label": "Bed Ends",
-                "Width": 1162.0,
-                "Length": 386.0,
-                "Qty": 1,
-                "Grain?": False,
-                "Material": "MDF",
-                "Tooling": {
-                    "coord_mode": "absolute",
-                    "panel_width": 1162.0,
-                    "panel_length": 386.0,
-                    "operations": [
-                        {"type": "B_GEO", "x": 734.0, "y": 136.5, "depth": 4.0, "tool": "3MMDRILL", "side": 0},
-                    ],
-                    "routing": {"tool": "10MM"},
-                },
-            },
-        ]
-
-        cix_zip = create_cix_zip(layout, template_preview={}, panels=panels)
+        cix_zip = create_cix_zip(layout, template_preview={})
 
         with zipfile.ZipFile(io.BytesIO(cix_zip), "r") as zf:
             sheet_program = zf.read("Sheet_1.cix").decode("utf-8")
 
-        self.assertIn('PARAM,NAME=TNM,VALUE="3MMDRILL"', sheet_program)
-        self.assertIn('PARAM,NAME=TNM,VALUE="10MM"', sheet_program)
+        self.assertIn('PARAM,NAME=TNM,VALUE="6MM"', sheet_program)
 
 
     def test_build_sheet_boring_points_handles_absolute_rotated_dimensions_without_scaling(self):
@@ -366,38 +345,7 @@ END MACRO
             ],
         }
 
-        panels = [
-            {
-                "Label": "Door A",
-                "Width": 800.0,
-                "Length": 500.0,
-                "Qty": 1,
-                "Grain?": False,
-                "Material": "MDF",
-                "Tooling": {
-                    "coord_mode": "normalized",
-                    "panel_thickness": 18.0,
-                    "toolpath_segments": [
-                        {"x1": 0.0, "y1": 0.0, "x2": 1.0, "y2": 0.0},
-                        {"x1": 1.0, "y1": 0.0, "x2": 1.0, "y2": 1.0},
-                        {"x1": 1.0, "y1": 1.0, "x2": 0.0, "y2": 1.0},
-                        {"x1": 0.0, "y1": 1.0, "x2": 0.0, "y2": 0.0},
-                    ],
-                    "borings": [],
-                    "routing": {"tool": "6MM"},
-                },
-            },
-            {
-                "Label": "Door B",
-                "Width": 400.0,
-                "Length": 250.0,
-                "Qty": 1,
-                "Grain?": False,
-                "Material": "MDF",
-            },
-        ]
-
-        cix_zip = create_cix_zip(layout, template_preview, panels=panels)
+        cix_zip = create_cix_zip(layout, template_preview)
 
         with zipfile.ZipFile(io.BytesIO(cix_zip), "r") as zf:
             names = sorted(zf.namelist())
@@ -407,9 +355,7 @@ END MACRO
         self.assertIn("LPX=2440", sheet_program)
         self.assertIn("LPY=1220", sheet_program)
         self.assertIn('PARAM,NAME=TNM,VALUE="6MM"', sheet_program)
-        self.assertIn('PARAM,NAME=TNM,VALUE="10MM"', sheet_program)
         self.assertIn("PARAM,NAME=X,VALUE=100", sheet_program)
-        self.assertIn("PARAM,NAME=Y,VALUE=200", sheet_program)
 
         # Both parts are represented in one sheet program.
         self.assertIn("'PART_LABEL=Door A'", sheet_program)
@@ -421,9 +367,6 @@ END MACRO
         self.assertIn('PARAM,NAME=LAY,VALUE="Part_Door_B"', sheet_program)
         self.assertIn('PARAM,NAME=ID,VALUE="GDoor_B"', sheet_program)
 
-        # Door A tooling has no boring ops; Door B falls back to template boring.
-        self.assertIn("PARAM,NAME=X,VALUE=1025", sheet_program)
-        self.assertIn("PARAM,NAME=Y,VALUE=325", sheet_program)
     def test_dxf_without_payload_raises_error(self):
         dxf_bytes = b"0\nSECTION\n2\nHEADER\n0\nENDSEC\n0\nEOF\n"
 

@@ -17,7 +17,7 @@ from manual_layout import initialize_layout_from_packer, move_part, rotate_part_
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
-from offcut_utils import calculate_sheet_offcuts
+from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -775,6 +775,33 @@ with col2:
                 st.dataframe(pd.DataFrame(offcuts["reusable_offcuts"]), hide_index=True, width="stretch")
             else:
                 st.caption("No reusable offcuts match current filter thresholds.")
+
+            st.markdown("#### Sheet Usage Heat Map")
+            heat_cell = st.number_input("Heat map cell size (mm)", min_value=25.0, value=150.0, step=25.0, key="heatmap_cell_size")
+            heat_rows = build_sheet_usage_heatmap(st.session_state.manual_layout, selected_sheet, cell_size=heat_cell)
+            if heat_rows:
+                heat_df = pd.DataFrame(heat_rows)
+                heat_chart = (
+                    alt.Chart(heat_df)
+                    .mark_rect()
+                    .encode(
+                        x=alt.X("x:Q", title="X (mm)"),
+                        x2="x2:Q",
+                        y=alt.Y("y:Q", title="Y (mm)"),
+                        y2="y2:Q",
+                        color=alt.Color("usage_pct:Q", title="Usage %", scale=alt.Scale(scheme="yelloworangered", domain=[0, 100])),
+                        tooltip=[
+                            alt.Tooltip("x:Q", title="X"),
+                            alt.Tooltip("y:Q", title="Y"),
+                            alt.Tooltip("usage_pct:Q", title="Usage %"),
+                            alt.Tooltip("used_area:Q", title="Used area"),
+                            alt.Tooltip("cell_area:Q", title="Cell area"),
+                        ],
+                    )
+                    .properties(height=360)
+                )
+                st.altair_chart(heat_chart, width="stretch")
+                st.caption("Darker cells are more heavily used by parts; lighter cells indicate likely reclaimable space.")
 
         if MACHINE_TYPE == "Flat Bed":
             action_col1, action_col2 = st.columns([1, 2])

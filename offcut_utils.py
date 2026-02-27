@@ -70,7 +70,19 @@ def _prune_contained(rects):
     return kept
 
 
-def calculate_sheet_offcuts(layout, sheet, min_width=120.0, min_height=120.0, min_area=25000.0):
+
+
+def _overlap_area(a, b):
+    ix1 = max(a["x"], b["x"])
+    iy1 = max(a["y"], b["y"])
+    ix2 = min(a["x"] + a["w"], b["x"] + b["w"])
+    iy2 = min(a["y"] + a["h"], b["y"] + b["h"])
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    return (ix2 - ix1) * (iy2 - iy1)
+
+
+def _usable_sheet_and_parts(layout, sheet):
     margin = _safe_float(layout.get("margin"), 0.0)
     sheet_w = _safe_float(layout.get("sheet_w"), 0.0)
     sheet_h = _safe_float(layout.get("sheet_h"), 0.0)
@@ -81,7 +93,6 @@ def calculate_sheet_offcuts(layout, sheet, min_width=120.0, min_height=120.0, mi
         "w": max(0.0, sheet_w - (2.0 * margin)),
         "h": max(0.0, sheet_h - (2.0 * margin)),
     }
-    interior_area = usable["w"] * usable["h"]
 
     parts = []
     for part in sheet.get("parts", []):
@@ -97,6 +108,12 @@ def calculate_sheet_offcuts(layout, sheet, min_width=120.0, min_height=120.0, mi
             parts.append({"x": px, "y": py, "w": cw, "h": ch})
 
     parts.sort(key=lambda r: (r["y"], r["x"]))
+    return usable, parts
+
+
+def calculate_sheet_offcuts(layout, sheet, min_width=120.0, min_height=120.0, min_area=25000.0):
+    usable, parts = _usable_sheet_and_parts(layout, sheet)
+    interior_area = usable["w"] * usable["h"]
 
     free_rects = [usable]
     for part in parts:
@@ -128,3 +145,47 @@ def calculate_sheet_offcuts(layout, sheet, min_width=120.0, min_height=120.0, mi
         "utilization_pct": round((used_area / interior_area * 100.0), 2) if interior_area > 0 else 0.0,
         "reusable_offcuts": reusable,
     }
+
+
+def build_sheet_usage_heatmap(layout, sheet, cell_size=100.0):
+    usable, parts = _usable_sheet_and_parts(layout, sheet)
+    if usable["w"] <= 0 or usable["h"] <= 0:
+        return []
+
+    size = max(10.0, _safe_float(cell_size, 100.0))
+    x_start = usable["x"]
+    y_start = usable["y"]
+    x_end = usable["x"] + usable["w"]
+    y_end = usable["y"] + usable["h"]
+
+    cells = []
+    y = y_start
+    row_idx = 0
+    while y < y_end - 1e-6:
+        x = x_start
+        col_idx = 0
+        cell_h = min(size, y_end - y)
+        while x < x_end - 1e-6:
+            cell_w = min(size, x_end - x)
+            cell = {"x": x, "y": y, "w": cell_w, "h": cell_h}
+            cell_area = cell_w * cell_h
+            used_area = sum(_overlap_area(cell, part) for part in parts)
+            usage_ratio = (used_area / cell_area) if cell_area > 0 else 0.0
+            cells.append({
+                "x": round(x, 2),
+                "y": round(y, 2),
+                "x2": round(x + cell_w, 2),
+                "y2": round(y + cell_h, 2),
+                "cell_col": col_idx,
+                "cell_row": row_idx,
+                "used_area": round(used_area, 2),
+                "cell_area": round(cell_area, 2),
+                "usage_ratio": round(usage_ratio, 4),
+                "usage_pct": round(usage_ratio * 100.0, 2),
+            })
+            x += size
+            col_idx += 1
+        y += size
+        row_idx += 1
+
+    return cells

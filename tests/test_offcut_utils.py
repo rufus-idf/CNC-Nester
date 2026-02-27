@@ -1,6 +1,6 @@
 import unittest
 
-from offcut_utils import calculate_sheet_offcuts
+from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap
 
 
 class OffcutUtilsTests(unittest.TestCase):
@@ -54,6 +54,38 @@ class OffcutUtilsTests(unittest.TestCase):
         result = calculate_sheet_offcuts(layout, sheet, min_width=20.0, min_height=20.0, min_area=400.0)
 
         self.assertEqual(result["reusable_offcuts"], [])
+
+    def test_build_sheet_usage_heatmap_empty_sheet_cells_are_zero(self):
+        layout = {
+            "sheet_w": 200.0,
+            "sheet_h": 100.0,
+            "margin": 0.0,
+        }
+        sheet = {"parts": []}
+
+        cells = build_sheet_usage_heatmap(layout, sheet, cell_size=100.0)
+
+        self.assertEqual(len(cells), 2)
+        self.assertTrue(all(c["usage_pct"] == 0.0 for c in cells))
+
+    def test_build_sheet_usage_heatmap_reports_partial_cell_coverage(self):
+        layout = {
+            "sheet_w": 200.0,
+            "sheet_h": 100.0,
+            "margin": 0.0,
+        }
+        sheet = {
+            "parts": [
+                {"x": 0.0, "y": 0.0, "w": 50.0, "h": 100.0},
+            ]
+        }
+
+        cells = build_sheet_usage_heatmap(layout, sheet, cell_size=100.0)
+
+        left = [c for c in cells if c["x"] == 0.0][0]
+        right = [c for c in cells if c["x"] == 100.0][0]
+        self.assertEqual(left["usage_pct"], 50.0)
+        self.assertEqual(right["usage_pct"], 0.0)
 
 
 if __name__ == "__main__":

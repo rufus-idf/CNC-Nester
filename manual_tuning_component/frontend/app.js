@@ -2,6 +2,7 @@ const canvas = document.getElementById('canvas');
       const ctx = canvas.getContext('2d');
       let state = null;
       let drag = null;
+      let measure = { start: null, end: null, clearSeq: 0 };
       const DRAG_THRESHOLD_PX = 6;
 
       function postToStreamlit(type, payload = {}) {
@@ -186,6 +187,7 @@ function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
         drawRect(0, 0, state.sheetW, state.sheetH, null, '#333', 2);
         drawRect(state.margin, state.margin, state.sheetW - 2*state.margin, state.sheetH - 2*state.margin, null, '#cc0000', 1);
         drawSnapGrid();
+        drawMeasureOverlay();
 
         for (const part of state.parts) {
           const isSelected = part.id === state.selectedPartId;
@@ -198,7 +200,31 @@ function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
         }
       }
 
-      function pickPart(mx, my) {
+      
+function drawMeasureOverlay() {
+  if (!state.measureEnabled) return;
+  if (!measure.start) return;
+
+  const p1 = toPx(measure.start.x, measure.start.y);
+  const p2 = measure.end ? toPx(measure.end.x, measure.end.y) : p1;
+  ctx.strokeStyle = 'rgba(33, 150, 243, 0.95)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(p1.x, p1.y);
+  ctx.lineTo(p2.x, p2.y);
+  ctx.stroke();
+
+  ctx.fillStyle = '#1565c0';
+  ctx.font = '12px Arial';
+  const dx = (measure.end ? measure.end.x : measure.start.x) - measure.start.x;
+  const dy = (measure.end ? measure.end.y : measure.start.y) - measure.start.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const cx = (p1.x + p2.x) / 2;
+  const cy = (p1.y + p2.y) / 2;
+  ctx.fillText(`${dist.toFixed(1)} mm`, cx + 8, cy - 8);
+}
+
+function pickPart(mx, my) {
         const p = fromPx(mx, my);
         for (let i = state.parts.length - 1; i >= 0; i--) {
           const part = state.parts[i];
@@ -214,6 +240,23 @@ function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
         const rect = canvas.getBoundingClientRect();
         const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
         const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+        const world = fromPx(mx, my);
+
+        if (state.measureEnabled) {
+          if (!measure.start || (measure.start && measure.end)) {
+            measure.start = { x: world.x, y: world.y };
+            measure.end = null;
+          } else {
+            measure.end = { x: world.x, y: world.y };
+            const dx = measure.end.x - measure.start.x;
+            const dy = measure.end.y - measure.start.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            emit({ type: 'measure_update', x1: measure.start.x, y1: measure.start.y, x2: measure.end.x, y2: measure.end.y, distance: dist });
+          }
+          render();
+          return;
+        }
+
         const { part, p } = pickPart(mx, my);
         if (!part) return;
 
@@ -313,8 +356,18 @@ function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
           kerfPromptEnabled: Boolean(payload.kerf_prompt_enabled),
           kerfPromptThreshold: Number(payload.kerf_prompt_threshold || 12),
           kerf: Number(layout.kerf || 0),
+          measureEnabled: Boolean(payload.measure_enabled),
+          measureClearSeq: Number(payload.measure_clear_seq || 0),
           scale,
         };
+
+        if (measure.clearSeq !== state.measureClearSeq) {
+          measure = { start: null, end: null, clearSeq: state.measureClearSeq };
+        }
+        if (!state.measureEnabled) {
+          measure = { start: null, end: null, clearSeq: state.measureClearSeq };
+        }
+
         render();
         postToStreamlit("streamlit:setFrameHeight", { height: document.body.scrollHeight + 12 });
       }

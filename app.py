@@ -68,6 +68,12 @@ if 'manual_kerf_prompt_threshold' not in st.session_state:
     st.session_state.manual_kerf_prompt_threshold = 12.0
 if 'manual_pending_suggestion' not in st.session_state:
     st.session_state.manual_pending_suggestion = None
+if 'manual_measure_enabled' not in st.session_state:
+    st.session_state.manual_measure_enabled = False
+if 'manual_measure_readout' not in st.session_state:
+    st.session_state.manual_measure_readout = None
+if 'manual_measure_clear_seq' not in st.session_state:
+    st.session_state.manual_measure_clear_seq = 0
 if 'cix_preview' not in st.session_state:
     st.session_state.cix_preview = None
 if 'last_sheet_preset_applied' not in st.session_state:
@@ -195,7 +201,7 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
     st.pyplot(fig)
 
 
-def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0, snap_enabled=False, snap_size=10.0, show_snap_grid=False, align_snap_enabled=True, align_snap_tolerance=4.0, kerf_prompt_enabled=True, kerf_prompt_threshold=12.0):
+def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0, snap_enabled=False, snap_size=10.0, show_snap_grid=False, align_snap_enabled=True, align_snap_tolerance=4.0, kerf_prompt_enabled=True, kerf_prompt_threshold=12.0, measure_enabled=False, measure_clear_seq=0):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     part_ids = [p["id"] for p in selected_sheet["parts"]]
 
@@ -215,6 +221,8 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
         align_snap_tolerance=align_snap_tolerance,
         kerf_prompt_enabled=kerf_prompt_enabled,
         kerf_prompt_threshold=kerf_prompt_threshold,
+        measure_enabled=measure_enabled,
+        measure_clear_seq=measure_clear_seq,
         key=f"manual_canvas_{selected_sheet_idx}",
     )
 
@@ -237,6 +245,16 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
                 "x": float(event.get("x", 0.0)),
                 "y": float(event.get("y", 0.0)),
                 "gap": float(event.get("gap", 0.0)),
+                "event_id": event.get("event_id"),
+            }
+        elif event.get("type") == "measure_update":
+            move_event = {
+                "type": "measure_update",
+                "distance": float(event.get("distance", 0.0)),
+                "x1": float(event.get("x1", 0.0)),
+                "y1": float(event.get("y1", 0.0)),
+                "x2": float(event.get("x2", 0.0)),
+                "y2": float(event.get("y2", 0.0)),
                 "event_id": event.get("event_id"),
             }
 
@@ -397,6 +415,13 @@ def manual_tuning_dialog():
     align_c3.toggle("Kerf auto-suggest", key="manual_kerf_prompt_enabled")
     st.number_input("Kerf suggest threshold (mm)", min_value=1.0, max_value=50.0, step=1.0, key="manual_kerf_prompt_threshold")
 
+    m1, m2 = st.columns([1, 1])
+    m1.toggle("Tape measure mode", key="manual_measure_enabled")
+    if m2.button("Clear tape measure"):
+        st.session_state.manual_measure_clear_seq = int(st.session_state.get("manual_measure_clear_seq", 0)) + 1
+        st.session_state.manual_measure_readout = None
+
+
     clicked_part_id, move_event, legal_cells, blocked_cells = draw_interactive_layout(
         layout,
         selected_sheet_idx,
@@ -409,12 +434,14 @@ def manual_tuning_dialog():
         align_snap_tolerance=float(st.session_state.get("manual_align_snap_tolerance", 4.0)),
         kerf_prompt_enabled=bool(st.session_state.get("manual_kerf_prompt_enabled", True)),
         kerf_prompt_threshold=float(st.session_state.get("manual_kerf_prompt_threshold", 12.0)),
+        measure_enabled=bool(st.session_state.get("manual_measure_enabled", False)),
+        measure_clear_seq=int(st.session_state.get("manual_measure_clear_seq", 0)),
     )
     if clicked_part_id in part_ids and clicked_part_id != st.session_state.manual_selected_part_id:
         st.session_state.manual_selected_part_id = clicked_part_id
         st.session_state.manual_part_select = clicked_part_id
 
-    if move_event and move_event.get("part_id") in part_ids:
+    if move_event and (move_event.get("type") == "measure_update" or move_event.get("part_id") in part_ids):
         event_id = move_event.get("event_id")
         if event_id and event_id == st.session_state.get("manual_canvas_last_event_id"):
             pass
@@ -422,6 +449,8 @@ def manual_tuning_dialog():
             st.session_state.manual_canvas_last_event_id = event_id
             if move_event.get("type") == "suggest_snap":
                 st.session_state.manual_pending_suggestion = move_event
+            elif move_event.get("type") == "measure_update":
+                st.session_state.manual_measure_readout = move_event
             else:
                 st.session_state.manual_pending_suggestion = None
                 st.session_state.manual_layout_draft, ok, msg = move_part_to(
@@ -459,6 +488,14 @@ def manual_tuning_dialog():
         f"Y {bounds['y_min']:.1f}→{bounds['y_max']:.1f}. "
         f"Guide summary: {legal_cells} green cells, {blocked_cells} red cells."
     )
+
+    measure = st.session_state.get("manual_measure_readout")
+    if measure and bool(st.session_state.get("manual_measure_enabled", False)):
+        st.info(
+            f"Tape measure: {measure.get('distance', 0.0):.1f} mm "
+            f"(from X={measure.get('x1', 0.0):.1f}, Y={measure.get('y1', 0.0):.1f} "
+            f"to X={measure.get('x2', 0.0):.1f}, Y={measure.get('y2', 0.0):.1f})"
+        )
 
     suggestion = st.session_state.get("manual_pending_suggestion")
     if suggestion and suggestion.get("part_id") == selected_part_id:
@@ -514,7 +551,7 @@ def manual_tuning_dialog():
     st.markdown("##### Mouse placement")
     st.caption(
         "Click a panel to select it, then drag it on the canvas. "
-        "Green zones are valid; red zones are blocked. Enable snap to lock moves to the snap grid."
+        "Green zones are valid; red zones are blocked. Enable tape measure mode to click two points and read distance."
     )
 
     d1, d2, d3 = st.columns(3)

@@ -30,7 +30,31 @@ const MAX_ZOOM = 8.0;
         return state.scale * view.zoom;
       }
 
-      function toPx(x, y) {
+      
+function clampViewOffsets() {
+  if (!state) return;
+  const s = currentScale();
+  const scaledW = state.sheetW * s;
+  const scaledH = state.sheetH * s;
+
+  if (scaledW <= canvas.width) {
+    view.offsetX = (canvas.width - scaledW) / 2;
+  } else {
+    const minX = canvas.width - scaledW;
+    const maxX = 0;
+    view.offsetX = Math.max(minX, Math.min(maxX, view.offsetX));
+  }
+
+  if (scaledH <= canvas.height) {
+    view.offsetY = -(canvas.height - scaledH) / 2;
+  } else {
+    const minY = 0;
+    const maxY = scaledH - canvas.height;
+    view.offsetY = Math.max(minY, Math.min(maxY, view.offsetY));
+  }
+}
+
+function toPx(x, y) {
         const s = currentScale();
         return {
           x: x * s + view.offsetX,
@@ -412,6 +436,7 @@ function pickPart(mx, my) {
         view.offsetX = mx - before.x * scaled;
         view.offsetY = my - canvas.height + before.y * scaled;
 
+        clampViewOffsets();
         render();
       }, { passive: false });
 
@@ -462,6 +487,7 @@ function pickPart(mx, my) {
           measure = { start: null, end: null, clearSeq: state.measureClearSeq };
         }
 
+        clampViewOffsets();
         render();
         postToStreamlit("streamlit:setFrameHeight", { height: document.body.scrollHeight + 12 });
       }

@@ -551,7 +551,7 @@ def manual_tuning_dialog():
 
     st.markdown("##### Mouse placement")
     st.caption(
-        "Click a panel to select it, then drag it on the canvas. "
+        "Click a panel to select it, then drag it on the canvas. Use mouse wheel to zoom. "
         "Green zones are valid; red zones are blocked. Enable tape measure mode to click two points and read distance."
     )
 

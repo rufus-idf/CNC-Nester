@@ -3,8 +3,11 @@ const canvas = document.getElementById('canvas');
       let state = null;
       let drag = null;
       let measure = { start: null, end: null, clearSeq: 0 };
+      let view = { zoom: 1.0, offsetX: 0.0, offsetY: 0.0, sheetW: null, sheetH: null };
       const DRAG_THRESHOLD_PX = 6;
 const MEASURE_SNAP_PX = 10;
+const MIN_ZOOM = 1.0;
+const MAX_ZOOM = 8.0;
 
       function postToStreamlit(type, payload = {}) {
         window.parent.postMessage(
@@ -23,14 +26,24 @@ const MEASURE_SNAP_PX = 10;
         });
       }
 
+      function currentScale() {
+        return state.scale * view.zoom;
+      }
+
       function toPx(x, y) {
-        const s = state.scale;
-        return { x: x * s, y: canvas.height - y * s };
+        const s = currentScale();
+        return {
+          x: x * s + view.offsetX,
+          y: canvas.height - y * s + view.offsetY,
+        };
       }
 
       function fromPx(px, py) {
-        const s = state.scale;
-        return { x: px / s, y: (canvas.height - py) / s };
+        const s = currentScale();
+        return {
+          x: (px - view.offsetX) / s,
+          y: (canvas.height - (py - view.offsetY)) / s,
+        };
       }
 
       function clampToSheet(part, x, y) {
@@ -179,7 +192,7 @@ function nearestPointOnSegment(p, a, b) {
 }
 
 function getMeasureSnapPoint(world) {
-  const toleranceMm = MEASURE_SNAP_PX / state.scale;
+  const toleranceMm = MEASURE_SNAP_PX / currentScale();
   let best = null;
 
   for (const part of state.parts) {
@@ -381,6 +394,27 @@ function pickPart(mx, my) {
         drag = null;
       });
 
+
+      canvas.addEventListener('wheel', (e) => {
+        if (!state) return;
+        e.preventDefault();
+
+        const rect = canvas.getBoundingClientRect();
+        const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+        const my = (e.clientY - rect.top) * (canvas.height / rect.height);
+
+        const before = fromPx(mx, my);
+        const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+        const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, view.zoom * factor));
+        view.zoom = newZoom;
+
+        const scaled = currentScale();
+        view.offsetX = mx - before.x * scaled;
+        view.offsetY = my - canvas.height + before.y * scaled;
+
+        render();
+      }, { passive: false });
+
       function onRender(event) {
         const msg = event.data || {};
         if (msg.type !== "streamlit:render") return;
@@ -394,6 +428,8 @@ function pickPart(mx, my) {
         const scale = Math.min(maxW / layout.sheet_w, maxH / layout.sheet_h);
         canvas.width = Math.max(600, Math.floor(layout.sheet_w * scale));
         canvas.height = Math.max(260, Math.floor(layout.sheet_h * scale));
+
+        const sheetChanged = view.sheetW !== layout.sheet_w || view.sheetH !== layout.sheet_h;
 
         state = {
           sheetW: layout.sheet_w,
@@ -414,6 +450,10 @@ function pickPart(mx, my) {
           measureClearSeq: Number(payload.measure_clear_seq || 0),
           scale,
         };
+
+        if (sheetChanged) {
+          view = { zoom: 1.0, offsetX: 0.0, offsetY: 0.0, sheetW: layout.sheet_w, sheetH: layout.sheet_h };
+        }
 
         if (measure.clearSeq !== state.measureClearSeq) {
           measure = { start: null, end: null, clearSeq: state.measureClearSeq };

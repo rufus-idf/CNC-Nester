@@ -4,6 +4,7 @@ const canvas = document.getElementById('canvas');
       let drag = null;
       let measure = { start: null, end: null, clearSeq: 0 };
       const DRAG_THRESHOLD_PX = 6;
+const MEASURE_SNAP_PX = 10;
 
       function postToStreamlit(type, payload = {}) {
         window.parent.postMessage(
@@ -158,6 +159,58 @@ function findKerfSuggestion(part, x, y) {
   return best;
 }
 
+
+function distance(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function nearestPointOnSegment(p, a, b) {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const apx = p.x - a.x;
+  const apy = p.y - a.y;
+  const ab2 = abx * abx + aby * aby;
+  if (ab2 <= 1e-9) return { x: a.x, y: a.y };
+  let t = (apx * abx + apy * aby) / ab2;
+  t = Math.max(0, Math.min(1, t));
+  return { x: a.x + abx * t, y: a.y + aby * t };
+}
+
+function getMeasureSnapPoint(world) {
+  const toleranceMm = MEASURE_SNAP_PX / state.scale;
+  let best = null;
+
+  for (const part of state.parts) {
+    const corners = [
+      { x: part.x, y: part.y },
+      { x: part.x + part.w, y: part.y },
+      { x: part.x + part.w, y: part.y + part.h },
+      { x: part.x, y: part.y + part.h },
+    ];
+
+    for (const c of corners) {
+      const d = distance(world, c);
+      if (d <= toleranceMm && (!best || d < best.d)) best = { p: c, d };
+    }
+
+    const edges = [
+      [corners[0], corners[1]],
+      [corners[1], corners[2]],
+      [corners[2], corners[3]],
+      [corners[3], corners[0]],
+    ];
+    for (const [a, b] of edges) {
+      const q = nearestPointOnSegment(world, a, b);
+      const d = distance(world, q);
+      if (d <= toleranceMm && (!best || d < best.d)) best = { p: q, d };
+    }
+  }
+
+  return best ? best.p : world;
+}
+
 function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
         const p1 = toPx(x, y);
         const p2 = toPx(x + w, y + h);
@@ -243,11 +296,12 @@ function pickPart(mx, my) {
         const world = fromPx(mx, my);
 
         if (state.measureEnabled) {
+          const snappedPoint = getMeasureSnapPoint(world);
           if (!measure.start || (measure.start && measure.end)) {
-            measure.start = { x: world.x, y: world.y };
+            measure.start = { x: snappedPoint.x, y: snappedPoint.y };
             measure.end = null;
           } else {
-            measure.end = { x: world.x, y: world.y };
+            measure.end = { x: snappedPoint.x, y: snappedPoint.y };
             const dx = measure.end.x - measure.start.x;
             const dy = measure.end.y - measure.start.y;
             const dist = Math.sqrt(dx * dx + dy * dy);

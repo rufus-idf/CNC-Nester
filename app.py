@@ -417,6 +417,7 @@ def manual_tuning_dialog():
 
     m1, m2 = st.columns([1, 1])
     m1.toggle("Tape measure mode", key="manual_measure_enabled")
+    st.caption("Tape measure snaps to nearby panel edges/corners when clicking points.")
     if m2.button("Clear tape measure"):
         st.session_state.manual_measure_clear_seq = int(st.session_state.get("manual_measure_clear_seq", 0)) + 1
         st.session_state.manual_measure_readout = None

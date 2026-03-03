@@ -1,6 +1,6 @@
 import unittest
 
-from manual_tuning_engine import can_place_part_at, compute_position_grid, legal_bounds, move_part_to
+from manual_tuning_engine import can_place_part_at, compute_position_grid, compute_visual_guide_grid, legal_bounds, move_part_to
 
 
 class ManualTuningEngineTests(unittest.TestCase):
@@ -46,6 +46,26 @@ class ManualTuningEngineTests(unittest.TestCase):
         origin = next(r for r in rows if r["x"] == 0.0 and r["y"] == 0.0)
         self.assertFalse(origin["is_legal"])
         self.assertIn("bounds", origin["reason"].lower())
+
+    def test_visual_guide_grid_mostly_green_for_single_panel(self):
+        single = {
+            "sheet_w": 2440.0,
+            "sheet_h": 1220.0,
+            "margin": 50.0,
+            "kerf": 6.0,
+            "sheets": [
+                {
+                    "sheet_index": 0,
+                    "parts": [
+                        {"id": "A", "rid": "A", "x": 50.0, "y": 50.0, "w": 1000.0, "h": 1000.0, "rotated": False},
+                    ],
+                }
+            ],
+        }
+        rows = compute_visual_guide_grid(single, 0, "A", 100.0)
+        legal = sum(1 for r in rows if r["is_legal"])
+        blocked = len(rows) - legal
+        self.assertGreater(legal, blocked)
 
     def test_compute_position_grid_contains_both_states(self):
         rows = compute_position_grid(self.layout, 0, "A", 100.0)

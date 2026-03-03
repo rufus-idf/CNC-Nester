@@ -13,7 +13,7 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
 from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
-from manual_tuning_engine import compute_position_grid, legal_bounds, move_part_to
+from manual_tuning_engine import compute_position_grid, compute_visual_guide_grid, legal_bounds, move_part_to
 from manual_tuning_component import manual_tuning_canvas
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
@@ -185,7 +185,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
 
     grid_rows = []
     if selected_part_id in part_ids:
-        grid_rows = compute_position_grid(layout, selected_sheet_idx, selected_part_id, overlay_step)
+        grid_rows = compute_visual_guide_grid(layout, selected_sheet_idx, selected_part_id, overlay_step)
 
     event = manual_tuning_canvas(
         layout=layout,
@@ -404,7 +404,7 @@ def manual_tuning_dialog():
         "Movement envelope (margin-only): "
         f"X {bounds['x_min']:.1f}→{bounds['x_max']:.1f}, "
         f"Y {bounds['y_min']:.1f}→{bounds['y_max']:.1f}. "
-        f"Grid summary: {legal_cells} legal cells, {blocked_cells} blocked cells."
+        f"Guide summary: {legal_cells} green cells, {blocked_cells} red cells."
     )
 
     nudge = st.number_input("Move step (mm)", min_value=1.0, value=float(st.session_state.get("manual_nudge", 10.0)), step=1.0, key="manual_nudge")

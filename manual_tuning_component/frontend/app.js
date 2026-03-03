@@ -80,6 +80,83 @@ function drawSnapGrid() {
   }
 }
 
+
+function rangesOverlap(a1, a2, b1, b2) {
+  return Math.min(a2, b2) - Math.max(a1, b1) > 0;
+}
+
+function findAlignmentSnap(part, x, y) {
+  if (!state.alignSnapEnabled) return null;
+  const tol = Math.max(0.1, state.alignSnapTolerance || 0);
+  let best = null;
+
+  for (const other of state.parts) {
+    if (other.id === part.id) continue;
+
+    const xCandidates = [
+      { v: other.x, kind: 'left-left' },
+      { v: other.x + other.w - part.w, kind: 'right-right' },
+      { v: other.x - part.w, kind: 'right-left' },
+      { v: other.x + other.w, kind: 'left-right' },
+      { v: other.x - state.kerf - part.w, kind: 'kerf-left' },
+      { v: other.x + other.w + state.kerf, kind: 'kerf-right' },
+    ];
+
+    for (const c of xCandidates) {
+      const d = Math.abs(x - c.v);
+      if (d > tol) continue;
+      if (!rangesOverlap(y, y + part.h, other.y, other.y + other.h)) continue;
+      if (!best || d < best.distance) best = { axis: 'x', value: c.v, distance: d, kind: c.kind };
+    }
+
+    const yCandidates = [
+      { v: other.y, kind: 'bottom-bottom' },
+      { v: other.y + other.h - part.h, kind: 'top-top' },
+      { v: other.y - part.h, kind: 'top-bottom' },
+      { v: other.y + other.h, kind: 'bottom-top' },
+      { v: other.y - state.kerf - part.h, kind: 'kerf-bottom' },
+      { v: other.y + other.h + state.kerf, kind: 'kerf-top' },
+    ];
+
+    for (const c of yCandidates) {
+      const d = Math.abs(y - c.v);
+      if (d > tol) continue;
+      if (!rangesOverlap(x, x + part.w, other.x, other.x + other.w)) continue;
+      if (!best || d < best.distance) best = { axis: 'y', value: c.v, distance: d, kind: c.kind };
+    }
+  }
+
+  return best;
+}
+
+function findKerfSuggestion(part, x, y) {
+  if (!state.kerfPromptEnabled) return null;
+  const threshold = Math.max(0.1, state.kerfPromptThreshold || 0);
+  let best = null;
+
+  for (const other of state.parts) {
+    if (other.id === part.id) continue;
+
+    const xCandidates = [other.x - state.kerf - part.w, other.x + other.w + state.kerf];
+    for (const v of xCandidates) {
+      const d = Math.abs(x - v);
+      if (d > threshold) continue;
+      if (!rangesOverlap(y, y + part.h, other.y, other.y + other.h)) continue;
+      if (!best || d < best.distance) best = { x: v, y, distance: d };
+    }
+
+    const yCandidates = [other.y - state.kerf - part.h, other.y + other.h + state.kerf];
+    for (const v of yCandidates) {
+      const d = Math.abs(y - v);
+      if (d > threshold) continue;
+      if (!rangesOverlap(x, x + part.w, other.x, other.x + other.w)) continue;
+      if (!best || d < best.distance) best = { x, y: v, distance: d };
+    }
+  }
+
+  return best;
+}
+
 function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
         const p1 = toPx(x, y);
         const p2 = toPx(x + w, y + h);
@@ -147,6 +224,7 @@ function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
           offsetX: p.x - part.x,
           offsetY: p.y - part.y,
           dragged: false,
+          snappedByAlign: false,
         };
       });
 
@@ -168,7 +246,18 @@ function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
         const moving = state.parts.find(pp => pp.id === drag.partId);
         if (!moving) return;
         const clamped = clampToSheet(moving, p.x - drag.offsetX, p.y - drag.offsetY);
-        const snapped = applySnap(moving, clamped.x, clamped.y);
+        let candidateX = clamped.x;
+        let candidateY = clamped.y;
+        drag.snappedByAlign = false;
+
+        const align = findAlignmentSnap(moving, candidateX, candidateY);
+        if (align) {
+          if (align.axis === 'x') candidateX = align.value;
+          if (align.axis === 'y') candidateY = align.value;
+          drag.snappedByAlign = true;
+        }
+
+        const snapped = applySnap(moving, candidateX, candidateY);
         moving.x = snapped.x;
         moving.y = snapped.y;
         render();
@@ -179,6 +268,14 @@ function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
         const moved = state.parts.find(pp => pp.id === drag.partId);
 
         if (drag.dragged) {
+          if (!drag.snappedByAlign) {
+            const suggestion = findKerfSuggestion(moved, moved.x, moved.y);
+            if (suggestion) {
+              emit({ type: 'suggest_snap', part_id: drag.partId, x: suggestion.x, y: suggestion.y, gap: suggestion.distance });
+              drag = null;
+              return;
+            }
+          }
           emit({ type: 'move', part_id: drag.partId, x: moved.x, y: moved.y });
         } else {
           emit({ type: 'select', part_id: drag.partId });
@@ -211,6 +308,11 @@ function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
           snapEnabled: Boolean(payload.snap_enabled),
           snapSize: Number(payload.snap_size || 10),
           showSnapGrid: Boolean(payload.show_snap_grid),
+          alignSnapEnabled: Boolean(payload.align_snap_enabled),
+          alignSnapTolerance: Number(payload.align_snap_tolerance || 4),
+          kerfPromptEnabled: Boolean(payload.kerf_prompt_enabled),
+          kerfPromptThreshold: Number(payload.kerf_prompt_threshold || 12),
+          kerf: Number(layout.kerf || 0),
           scale,
         };
         render();

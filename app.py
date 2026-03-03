@@ -58,6 +58,16 @@ if 'manual_snap_size' not in st.session_state:
     st.session_state.manual_snap_size = 10.0
 if 'manual_show_snap_grid' not in st.session_state:
     st.session_state.manual_show_snap_grid = True
+if 'manual_align_snap_enabled' not in st.session_state:
+    st.session_state.manual_align_snap_enabled = True
+if 'manual_align_snap_tolerance' not in st.session_state:
+    st.session_state.manual_align_snap_tolerance = 4.0
+if 'manual_kerf_prompt_enabled' not in st.session_state:
+    st.session_state.manual_kerf_prompt_enabled = True
+if 'manual_kerf_prompt_threshold' not in st.session_state:
+    st.session_state.manual_kerf_prompt_threshold = 12.0
+if 'manual_pending_suggestion' not in st.session_state:
+    st.session_state.manual_pending_suggestion = None
 if 'cix_preview' not in st.session_state:
     st.session_state.cix_preview = None
 if 'last_sheet_preset_applied' not in st.session_state:
@@ -185,7 +195,7 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
     st.pyplot(fig)
 
 
-def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0, snap_enabled=False, snap_size=10.0, show_snap_grid=False):
+def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0, snap_enabled=False, snap_size=10.0, show_snap_grid=False, align_snap_enabled=True, align_snap_tolerance=4.0, kerf_prompt_enabled=True, kerf_prompt_threshold=12.0):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     part_ids = [p["id"] for p in selected_sheet["parts"]]
 
@@ -201,6 +211,10 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
         snap_enabled=snap_enabled,
         snap_size=snap_size,
         show_snap_grid=show_snap_grid,
+        align_snap_enabled=align_snap_enabled,
+        align_snap_tolerance=align_snap_tolerance,
+        kerf_prompt_enabled=kerf_prompt_enabled,
+        kerf_prompt_threshold=kerf_prompt_threshold,
         key=f"manual_canvas_{selected_sheet_idx}",
     )
 
@@ -214,6 +228,15 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
                 "part_id": event.get("part_id"),
                 "x": float(event.get("x", 0.0)),
                 "y": float(event.get("y", 0.0)),
+                "event_id": event.get("event_id"),
+            }
+        elif event.get("type") == "suggest_snap":
+            move_event = {
+                "type": "suggest_snap",
+                "part_id": event.get("part_id"),
+                "x": float(event.get("x", 0.0)),
+                "y": float(event.get("y", 0.0)),
+                "gap": float(event.get("gap", 0.0)),
                 "event_id": event.get("event_id"),
             }
 
@@ -368,6 +391,12 @@ def manual_tuning_dialog():
     snap_c2.number_input("Snap grid (mm)", min_value=1.0, max_value=100.0, step=1.0, key="manual_snap_size")
     snap_c3.toggle("Show snap grid", key="manual_show_snap_grid")
 
+    align_c1, align_c2, align_c3 = st.columns([1.2, 1, 1])
+    align_c1.toggle("Enable align snap", key="manual_align_snap_enabled")
+    align_c2.number_input("Align tolerance (mm)", min_value=1.0, max_value=20.0, step=1.0, key="manual_align_snap_tolerance")
+    align_c3.toggle("Kerf auto-suggest", key="manual_kerf_prompt_enabled")
+    st.number_input("Kerf suggest threshold (mm)", min_value=1.0, max_value=50.0, step=1.0, key="manual_kerf_prompt_threshold")
+
     clicked_part_id, move_event, legal_cells, blocked_cells = draw_interactive_layout(
         layout,
         selected_sheet_idx,
@@ -376,6 +405,10 @@ def manual_tuning_dialog():
         snap_enabled=bool(st.session_state.get("manual_snap_enabled", False)),
         snap_size=float(st.session_state.get("manual_snap_size", 10.0)),
         show_snap_grid=bool(st.session_state.get("manual_show_snap_grid", True)),
+        align_snap_enabled=bool(st.session_state.get("manual_align_snap_enabled", True)),
+        align_snap_tolerance=float(st.session_state.get("manual_align_snap_tolerance", 4.0)),
+        kerf_prompt_enabled=bool(st.session_state.get("manual_kerf_prompt_enabled", True)),
+        kerf_prompt_threshold=float(st.session_state.get("manual_kerf_prompt_threshold", 12.0)),
     )
     if clicked_part_id in part_ids and clicked_part_id != st.session_state.manual_selected_part_id:
         st.session_state.manual_selected_part_id = clicked_part_id
@@ -387,31 +420,19 @@ def manual_tuning_dialog():
             pass
         else:
             st.session_state.manual_canvas_last_event_id = event_id
-            st.session_state.manual_layout_draft, ok, msg = move_part_to(
-                layout,
-                selected_sheet_idx,
-                move_event["part_id"],
-                move_event["x"],
-                move_event["y"],
-            )
-            st.session_state.manual_notice = ("success" if ok else "error", msg)
-            st.rerun()
-
-    if move_event and move_event.get("part_id") in part_ids:
-        event_id = move_event.get("event_id")
-        if event_id and event_id == st.session_state.get("manual_canvas_last_event_id"):
-            pass
-        else:
-            st.session_state.manual_canvas_last_event_id = event_id
-            st.session_state.manual_layout_draft, ok, msg = move_part_to(
-                layout,
-                selected_sheet_idx,
-                move_event["part_id"],
-                move_event["x"],
-                move_event["y"],
-            )
-            st.session_state.manual_notice = ("success" if ok else "error", msg)
-            st.rerun()
+            if move_event.get("type") == "suggest_snap":
+                st.session_state.manual_pending_suggestion = move_event
+            else:
+                st.session_state.manual_pending_suggestion = None
+                st.session_state.manual_layout_draft, ok, msg = move_part_to(
+                    layout,
+                    selected_sheet_idx,
+                    move_event["part_id"],
+                    move_event["x"],
+                    move_event["y"],
+                )
+                st.session_state.manual_notice = ("success" if ok else "error", msg)
+                st.rerun()
 
     if st.session_state.get("manual_part_select") not in part_ids:
         st.session_state.manual_part_select = st.session_state.manual_selected_part_id
@@ -438,6 +459,27 @@ def manual_tuning_dialog():
         f"Y {bounds['y_min']:.1f}→{bounds['y_max']:.1f}. "
         f"Guide summary: {legal_cells} green cells, {blocked_cells} red cells."
     )
+
+    suggestion = st.session_state.get("manual_pending_suggestion")
+    if suggestion and suggestion.get("part_id") == selected_part_id:
+        st.info(
+            f"Panel is {suggestion.get('gap', 0.0):.1f} mm from a kerf-aligned position. Auto-snap to kerf?"
+        )
+        s1, s2 = st.columns(2)
+        if s1.button("Auto-snap to kerf", key=f"kerf_snap_apply_{selected_part_id}"):
+            st.session_state.manual_layout_draft, ok, msg = move_part_to(
+                layout,
+                selected_sheet_idx,
+                selected_part_id,
+                suggestion["x"],
+                suggestion["y"],
+            )
+            st.session_state.manual_pending_suggestion = None
+            st.session_state.manual_notice = ("success" if ok else "error", msg)
+            st.rerun()
+        if s2.button("Ignore suggestion", key=f"kerf_snap_ignore_{selected_part_id}"):
+            st.session_state.manual_pending_suggestion = None
+            st.rerun()
 
     nudge = st.number_input("Move step (mm)", min_value=1.0, value=float(st.session_state.get("manual_nudge", 10.0)), step=1.0, key="manual_nudge")
 

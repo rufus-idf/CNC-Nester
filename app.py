@@ -397,6 +397,22 @@ def manual_tuning_dialog():
             st.session_state.manual_notice = ("success" if ok else "error", msg)
             st.rerun()
 
+    if move_event and move_event.get("part_id") in part_ids:
+        event_id = move_event.get("event_id")
+        if event_id and event_id == st.session_state.get("manual_canvas_last_event_id"):
+            pass
+        else:
+            st.session_state.manual_canvas_last_event_id = event_id
+            st.session_state.manual_layout_draft, ok, msg = move_part_to(
+                layout,
+                selected_sheet_idx,
+                move_event["part_id"],
+                move_event["x"],
+                move_event["y"],
+            )
+            st.session_state.manual_notice = ("success" if ok else "error", msg)
+            st.rerun()
+
     if st.session_state.get("manual_part_select") not in part_ids:
         st.session_state.manual_part_select = st.session_state.manual_selected_part_id
 

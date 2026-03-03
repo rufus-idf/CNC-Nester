@@ -363,6 +363,11 @@ def manual_tuning_dialog():
     if st.session_state.manual_selected_part_id not in part_ids:
         st.session_state.manual_selected_part_id = part_ids[0]
 
+    snap_c1, snap_c2, snap_c3 = st.columns([1.2, 1, 1])
+    snap_c1.toggle("Enable snap", key="manual_snap_enabled")
+    snap_c2.number_input("Snap grid (mm)", min_value=1.0, max_value=100.0, step=1.0, key="manual_snap_size")
+    snap_c3.toggle("Show snap grid", key="manual_show_snap_grid")
+
     clicked_part_id, move_event, legal_cells, blocked_cells = draw_interactive_layout(
         layout,
         selected_sheet_idx,
@@ -375,7 +380,22 @@ def manual_tuning_dialog():
     if clicked_part_id in part_ids and clicked_part_id != st.session_state.manual_selected_part_id:
         st.session_state.manual_selected_part_id = clicked_part_id
         st.session_state.manual_part_select = clicked_part_id
-        st.rerun()
+
+    if move_event and move_event.get("part_id") in part_ids:
+        event_id = move_event.get("event_id")
+        if event_id and event_id == st.session_state.get("manual_canvas_last_event_id"):
+            pass
+        else:
+            st.session_state.manual_canvas_last_event_id = event_id
+            st.session_state.manual_layout_draft, ok, msg = move_part_to(
+                layout,
+                selected_sheet_idx,
+                move_event["part_id"],
+                move_event["x"],
+                move_event["y"],
+            )
+            st.session_state.manual_notice = ("success" if ok else "error", msg)
+            st.rerun()
 
     if move_event and move_event.get("part_id") in part_ids:
         event_id = move_event.get("event_id")
@@ -418,11 +438,6 @@ def manual_tuning_dialog():
         f"Y {bounds['y_min']:.1f}→{bounds['y_max']:.1f}. "
         f"Guide summary: {legal_cells} green cells, {blocked_cells} red cells."
     )
-
-    snap_c1, snap_c2, snap_c3 = st.columns([1.2, 1, 1])
-    snap_c1.toggle("Enable snap", key="manual_snap_enabled")
-    snap_c2.number_input("Snap grid (mm)", min_value=1.0, max_value=100.0, step=1.0, key="manual_snap_size")
-    snap_c3.toggle("Show snap grid", key="manual_show_snap_grid")
 
     nudge = st.number_input("Move step (mm)", min_value=1.0, value=float(st.session_state.get("manual_nudge", 10.0)), step=1.0, key="manual_nudge")
 

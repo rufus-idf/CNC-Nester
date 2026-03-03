@@ -52,6 +52,12 @@ if 'manual_notice' not in st.session_state:
     st.session_state.manual_notice = None
 if 'manual_canvas_last_event_id' not in st.session_state:
     st.session_state.manual_canvas_last_event_id = None
+if 'manual_snap_enabled' not in st.session_state:
+    st.session_state.manual_snap_enabled = False
+if 'manual_snap_size' not in st.session_state:
+    st.session_state.manual_snap_size = 10.0
+if 'manual_show_snap_grid' not in st.session_state:
+    st.session_state.manual_show_snap_grid = True
 if 'cix_preview' not in st.session_state:
     st.session_state.cix_preview = None
 if 'last_sheet_preset_applied' not in st.session_state:
@@ -179,7 +185,7 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
     st.pyplot(fig)
 
 
-def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0):
+def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0, snap_enabled=False, snap_size=10.0, show_snap_grid=False):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     part_ids = [p["id"] for p in selected_sheet["parts"]]
 
@@ -192,6 +198,9 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
         selected_sheet_idx=selected_sheet_idx,
         selected_part_id=selected_part_id,
         grid_rows=grid_rows,
+        snap_enabled=snap_enabled,
+        snap_size=snap_size,
+        show_snap_grid=show_snap_grid,
         key=f"manual_canvas_{selected_sheet_idx}",
     )
 
@@ -359,6 +368,9 @@ def manual_tuning_dialog():
         selected_sheet_idx,
         st.session_state.manual_selected_part_id,
         overlay_step=max(10.0, float(st.session_state.get("manual_nudge", 20.0))),
+        snap_enabled=bool(st.session_state.get("manual_snap_enabled", False)),
+        snap_size=float(st.session_state.get("manual_snap_size", 10.0)),
+        show_snap_grid=bool(st.session_state.get("manual_show_snap_grid", True)),
     )
     if clicked_part_id in part_ids and clicked_part_id != st.session_state.manual_selected_part_id:
         st.session_state.manual_selected_part_id = clicked_part_id
@@ -407,6 +419,11 @@ def manual_tuning_dialog():
         f"Guide summary: {legal_cells} green cells, {blocked_cells} red cells."
     )
 
+    snap_c1, snap_c2, snap_c3 = st.columns([1.2, 1, 1])
+    snap_c1.toggle("Enable snap", key="manual_snap_enabled")
+    snap_c2.number_input("Snap grid (mm)", min_value=1.0, max_value=100.0, step=1.0, key="manual_snap_size")
+    snap_c3.toggle("Show snap grid", key="manual_show_snap_grid")
+
     nudge = st.number_input("Move step (mm)", min_value=1.0, value=float(st.session_state.get("manual_nudge", 10.0)), step=1.0, key="manual_nudge")
 
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -440,7 +457,7 @@ def manual_tuning_dialog():
     st.markdown("##### Mouse placement")
     st.caption(
         "Click a panel to select it, then drag it on the canvas. "
-        "Green zones are valid; red zones are blocked. Use arrow controls for precise nudging."
+        "Green zones are valid; red zones are blocked. Enable snap to lock moves to the snap grid."
     )
 
     d1, d2, d3 = st.columns(3)

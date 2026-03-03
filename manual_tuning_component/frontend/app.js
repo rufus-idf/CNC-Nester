@@ -42,7 +42,45 @@ const canvas = document.getElementById('canvas');
         };
       }
 
-      function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
+      
+function snapAxis(value, spacing, origin) {
+  return Math.round((value - origin) / spacing) * spacing + origin;
+}
+
+function applySnap(part, x, y) {
+  if (!state.snapEnabled) return { x, y };
+  const spacing = Math.max(1, state.snapSize || 1);
+  const sx = snapAxis(x, spacing, state.margin);
+  const sy = snapAxis(y, spacing, state.margin);
+  return clampToSheet(part, sx, sy);
+}
+
+function drawSnapGrid() {
+  if (!state.showSnapGrid) return;
+  const spacing = Math.max(1, state.snapSize || 1);
+  ctx.strokeStyle = 'rgba(130,130,130,0.25)';
+  ctx.lineWidth = 1;
+
+  for (let x = state.margin; x <= state.sheetW - state.margin + 1e-6; x += spacing) {
+    const p1 = toPx(x, state.margin);
+    const p2 = toPx(x, state.sheetH - state.margin);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+  }
+
+  for (let y = state.margin; y <= state.sheetH - state.margin + 1e-6; y += spacing) {
+    const p1 = toPx(state.margin, y);
+    const p2 = toPx(state.sheetW - state.margin, y);
+    ctx.beginPath();
+    ctx.moveTo(p1.x, p1.y);
+    ctx.lineTo(p2.x, p2.y);
+    ctx.stroke();
+  }
+}
+
+function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
         const p1 = toPx(x, y);
         const p2 = toPx(x + w, y + h);
         const left = p1.x;
@@ -70,6 +108,7 @@ const canvas = document.getElementById('canvas');
 
         drawRect(0, 0, state.sheetW, state.sheetH, null, '#333', 2);
         drawRect(state.margin, state.margin, state.sheetW - 2*state.margin, state.sheetH - 2*state.margin, null, '#cc0000', 1);
+        drawSnapGrid();
 
         for (const part of state.parts) {
           const isSelected = part.id === state.selectedPartId;
@@ -129,8 +168,9 @@ const canvas = document.getElementById('canvas');
         const moving = state.parts.find(pp => pp.id === drag.partId);
         if (!moving) return;
         const clamped = clampToSheet(moving, p.x - drag.offsetX, p.y - drag.offsetY);
-        moving.x = clamped.x;
-        moving.y = clamped.y;
+        const snapped = applySnap(moving, clamped.x, clamped.y);
+        moving.x = snapped.x;
+        moving.y = snapped.y;
         render();
       });
 
@@ -168,6 +208,9 @@ const canvas = document.getElementById('canvas');
           selectedPartId: payload.selected_part_id,
           parts: JSON.parse(JSON.stringify(sheet.parts)),
           gridRows: payload.grid_rows || [],
+          snapEnabled: Boolean(payload.snap_enabled),
+          snapSize: Number(payload.snap_size || 10),
+          showSnapGrid: Boolean(payload.show_snap_grid),
           scale,
         };
         render();

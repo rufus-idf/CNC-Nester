@@ -41,6 +41,12 @@ class ManualTuningEngineTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("kerf", msg.lower())
 
+    def test_compute_position_grid_marks_margin_area_blocked(self):
+        rows = compute_position_grid(self.layout, 0, "A", 100.0)
+        origin = next(r for r in rows if r["x"] == 0.0 and r["y"] == 0.0)
+        self.assertFalse(origin["is_legal"])
+        self.assertIn("bounds", origin["reason"].lower())
+
     def test_compute_position_grid_contains_both_states(self):
         rows = compute_position_grid(self.layout, 0, "A", 100.0)
         self.assertTrue(any(r["is_legal"] for r in rows))

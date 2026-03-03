@@ -59,26 +59,25 @@ def compute_position_grid(layout, sheet_index, part_id, grid_step):
         return []
 
     step = max(1.0, float(grid_step))
-    bounds = legal_bounds(layout, part)
-    width = max(0.0, bounds["x_max"] - bounds["x_min"])
-    height = max(0.0, bounds["y_max"] - bounds["y_min"])
+    sheet_w = float(layout["sheet_w"])
+    sheet_h = float(layout["sheet_h"])
 
-    estimated = ((width / step) + 1) * ((height / step) + 1)
+    estimated = ((sheet_w / step) + 1) * ((sheet_h / step) + 1)
     if estimated > 12000:
         scale = (estimated / 12000) ** 0.5
         step *= scale
 
     rows = []
-    y = bounds["y_min"]
-    while y <= bounds["y_max"] + 1e-9:
-        x = bounds["x_min"]
-        while x <= bounds["x_max"] + 1e-9:
+    y = 0.0
+    while y < sheet_h - 1e-9:
+        x = 0.0
+        while x < sheet_w - 1e-9:
             ok, reason = can_place_part_at(layout, sheet_index, part_id, x, y)
             rows.append({
                 "x": float(round(x, 3)),
                 "y": float(round(y, 3)),
-                "x2": float(round(x + step, 3)),
-                "y2": float(round(y + step, 3)),
+                "x2": float(round(min(sheet_w, x + step), 3)),
+                "y2": float(round(min(sheet_h, y + step), 3)),
                 "is_legal": bool(ok),
                 "reason": "Legal" if ok else reason,
             })

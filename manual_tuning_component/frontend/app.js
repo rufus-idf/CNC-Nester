@@ -65,7 +65,7 @@ const canvas = document.getElementById('canvas');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         for (const cell of state.gridRows) {
-          drawRect(cell.x, cell.y, cell.x2 - cell.x, cell.y2 - cell.y, cell.is_legal ? 'rgba(120,200,120,0.25)' : 'rgba(255,120,120,0.25)', null);
+          drawRect(cell.x, cell.y, cell.x2 - cell.x, cell.y2 - cell.y, cell.is_legal ? 'rgba(102, 187, 106, 0.32)' : 'rgba(239, 83, 80, 0.36)', null);
         }
 
         drawRect(0, 0, state.sheetW, state.sheetH, null, '#333', 2);

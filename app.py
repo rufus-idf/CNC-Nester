@@ -81,8 +81,8 @@ if 'last_sheet_preset_applied' not in st.session_state:
 
 
 SHEET_PRESETS = {
-    "MDF (2070 x 2800)": (2070.0, 2800.0),
-    "Ply (1220 x 3050)": (1220.0, 3050.0),
+    "MDF (2800 x 2070)": (2800.0, 2070.0),
+    "Ply (3050 x 1220)": (3050.0, 1220.0),
 }
 
 
@@ -673,7 +673,7 @@ st.title("🪚 CNC Nester Pro (Robust)")
 
 st.sidebar.header("⚙️ Machine Settings")
 MACHINE_TYPE = st.sidebar.selectbox("Machine Type", ["Flat Bed", "Selco"], key="machine_type")
-st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2070 x 2800)", "Ply (1220 x 3050)"], index=0, key="sheet_preset")
+st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset")
 sync_sheet_dims_from_preset()
 SHEET_W = st.sidebar.number_input("Sheet Width", key="sheet_w", step=10.0)
 SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)

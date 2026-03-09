@@ -286,7 +286,8 @@ function drawRect(x, y, w, h, fill, stroke, lineWidth=1) {
           ctx.fillStyle = '#111';
           ctx.font = '12px Arial';
           ctx.textAlign = 'center';
-          ctx.fillText(part.rid, c.x, c.y);
+          const label = part.display_label || part.rid;
+          ctx.fillText(label, c.x, c.y);
         }
       }
 
@@ -447,6 +448,7 @@ function pickPart(mx, my) {
         const payload = JSON.parse(args.data);
         const layout = payload.layout;
         const sheet = layout.sheets[payload.selected_sheet_idx];
+        const partLabels = payload.part_labels || {};
 
         const maxW = 1200;
         const maxH = 560;
@@ -461,7 +463,10 @@ function pickPart(mx, my) {
           sheetH: layout.sheet_h,
           margin: layout.margin,
           selectedPartId: payload.selected_part_id,
-          parts: JSON.parse(JSON.stringify(sheet.parts)),
+          parts: JSON.parse(JSON.stringify(sheet.parts)).map(part => ({
+            ...part,
+            display_label: partLabels[part.id] || part.rid,
+          })),
           gridRows: payload.grid_rows || [],
           snapEnabled: Boolean(payload.snap_enabled),
           snapSize: Number(payload.snap_size || 10),

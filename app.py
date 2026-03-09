@@ -108,9 +108,18 @@ def apply_pending_loaded_nest():
 # --- HELPERS ---
 
 
+def normalize_panel_dims(width, length):
+    width_val = float(width)
+    length_val = float(length)
+    if length_val > width_val:
+        width_val, length_val = length_val, width_val
+    return width_val, length_val
+
+
 def add_panel(w, l, q, label, grain, mat):
+    normalized_w, normalized_l = normalize_panel_dims(w, l)
     row = {
-        "Label": label, "Width": w, "Length": l, "Qty": q,
+        "Label": label, "Width": normalized_w, "Length": normalized_l, "Qty": q,
         "Grain?": grain, "Material": mat
     }
     st.session_state['panels'].append(row)
@@ -178,7 +187,33 @@ def sync_sheet_dims_from_preset():
     st.session_state.last_sheet_preset_applied = preset
 
 
-def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None):
+
+
+def rotate_layout_90(layout):
+    rotated_layout = copy.deepcopy(layout)
+
+    old_sheet_w = float(rotated_layout["sheet_w"])
+    old_sheet_h = float(rotated_layout["sheet_h"])
+    rotated_layout["sheet_w"] = old_sheet_h
+    rotated_layout["sheet_h"] = old_sheet_w
+
+    for sheet in rotated_layout.get("sheets", []):
+        for part in sheet.get("parts", []):
+            old_x = float(part["x"])
+            old_y = float(part["y"])
+            old_w = float(part["w"])
+            old_h = float(part["h"])
+
+            part["x"] = old_sheet_h - (old_y + old_h)
+            part["y"] = old_x
+            part["w"] = old_h
+            part["h"] = old_w
+            part["rotated"] = not bool(part.get("rotated", False))
+
+    return rotated_layout
+
+
+def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None, rotate_view=False):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     indexed_name_map = build_indexed_part_labels(layout, selected_sheet_idx)
 
@@ -186,23 +221,37 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
     fig_w = 6.0
     fig_h = max(3.0, min(5.0, fig_w / ratio))
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=150)
-    ax.set_xlim(0, layout["sheet_w"])
-    ax.set_ylim(0, layout["sheet_h"])
+    view_sheet_w = layout["sheet_h"] if rotate_view else layout["sheet_w"]
+    view_sheet_h = layout["sheet_w"] if rotate_view else layout["sheet_h"]
+
+    ax.set_xlim(0, view_sheet_w)
+    ax.set_ylim(0, view_sheet_h)
     ax.set_aspect('equal')
     ax.axis('off')
-    ax.add_patch(patches.Rectangle((0, 0), layout["sheet_w"], layout["sheet_h"], fc='#eef5ff', ec='#333'))
-    ax.add_patch(patches.Rectangle((layout["margin"], layout["margin"]), layout["sheet_w"] - 2 * layout["margin"], layout["sheet_h"] - 2 * layout["margin"], ec='red', ls='--', fc='none'))
+    ax.add_patch(patches.Rectangle((0, 0), view_sheet_w, view_sheet_h, fc='#eef5ff', ec='#333'))
+    ax.add_patch(patches.Rectangle((layout["margin"], layout["margin"]), view_sheet_w - 2 * layout["margin"], view_sheet_h - 2 * layout["margin"], ec='red', ls='--', fc='none'))
 
     for part in selected_sheet["parts"]:
+        if rotate_view:
+            part_x = layout["sheet_h"] - (part["y"] + part["h"])
+            part_y = part["x"]
+            part_w = part["h"]
+            part_h = part["w"]
+        else:
+            part_x = part["x"]
+            part_y = part["y"]
+            part_w = part["w"]
+            part_h = part["h"]
+
         fc = '#5a7' if part.get('rotated') else '#6fa8dc'
-        ax.add_patch(patches.Rectangle((part["x"], part["y"]), part["w"], part["h"], fc=fc, ec='#222'))
+        ax.add_patch(patches.Rectangle((part_x, part_y), part_w, part_h, fc=fc, ec='#222'))
 
         label_text = indexed_name_map.get(part["id"], str(part.get("rid") or "Part"))
-        min_dim = min(float(part["w"]), float(part["h"]))
+        min_dim = min(float(part_w), float(part_h))
         font_size = max(5.0, min(9.5, min_dim / 55.0))
         ax.text(
-            part["x"] + part["w"] / 2,
-            part["y"] + part["h"] / 2,
+            part_x + part_w / 2,
+            part_y + part_h / 2,
             label_text,
             ha='center',
             va='center',
@@ -214,9 +263,14 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
         )
 
     boring_points = build_sheet_boring_points(selected_sheet.get("parts", []), tooling_map, template_preview)
+    if rotate_view:
+        boring_points = [
+            {**point, "x": layout["sheet_h"] - point["y"], "y": point["x"]}
+            for point in boring_points
+        ]
     if boring_points:
         ax.scatter([p["x"] for p in boring_points], [p["y"] for p in boring_points], c='#d32f2f', s=28, marker='o', edgecolors='white', linewidths=0.6, zorder=4)
-        ax.text(layout["margin"], layout["sheet_h"] - layout["margin"] - 25, f"Borings: {len(boring_points)}", color='#b71c1c', fontsize=8, ha='left', va='top')
+        ax.text(layout["margin"], view_sheet_h - layout["margin"] - 25, f"Borings: {len(boring_points)}", color='#b71c1c', fontsize=8, ha='left', va='top')
 
     fig.tight_layout(pad=0.2)
     st.pyplot(fig, use_container_width=True)
@@ -442,13 +496,21 @@ def manual_tuning_dialog():
     align_c3.toggle("Kerf auto-suggest", key="manual_kerf_prompt_enabled")
     st.number_input("Kerf suggest threshold (mm)", min_value=1.0, max_value=50.0, step=1.0, key="manual_kerf_prompt_threshold")
 
-    m1, m2 = st.columns([1, 1])
+    m1, m2, m3 = st.columns([1, 1, 1])
     m1.toggle("Tape measure mode", key="manual_measure_enabled")
     st.caption("Tape measure snaps to nearby panel edges/corners when clicking points.")
     if m2.button("Clear tape measure"):
         st.session_state.manual_measure_clear_seq = int(st.session_state.get("manual_measure_clear_seq", 0)) + 1
         st.session_state.manual_measure_readout = None
 
+    if m3.button("🔁 Rotate Sheet 90°"):
+        st.session_state.manual_layout_draft = rotate_layout_90(layout)
+        st.session_state.sheet_w = float(st.session_state.manual_layout_draft["sheet_w"])
+        st.session_state.sheet_h = float(st.session_state.manual_layout_draft["sheet_h"])
+        st.session_state.sheet_preset = infer_sheet_preset(st.session_state.sheet_w, st.session_state.sheet_h)
+        st.session_state.last_sheet_preset_applied = st.session_state.sheet_preset
+        st.session_state.manual_notice = ("success", "Sheet and nested parts rotated by 90°")
+        st.rerun()
 
     clicked_part_id, move_event, legal_cells, blocked_cells = draw_interactive_layout(
         layout,
@@ -585,6 +647,10 @@ def manual_tuning_dialog():
     d1, d2, d3 = st.columns(3)
     if d1.button("Apply to Nest", type="primary"):
         st.session_state.manual_layout = copy.deepcopy(st.session_state.manual_layout_draft)
+        st.session_state.sheet_w = float(st.session_state.manual_layout["sheet_w"])
+        st.session_state.sheet_h = float(st.session_state.manual_layout["sheet_h"])
+        st.session_state.sheet_preset = infer_sheet_preset(st.session_state.sheet_w, st.session_state.sheet_h)
+        st.session_state.last_sheet_preset_applied = st.session_state.sheet_preset
         st.session_state.show_manual_tuning = False
         st.success("Manual tuning applied to current nest.")
         st.rerun()
@@ -846,9 +912,15 @@ with result_tab:
         else:
             sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in preview_sheets]
             preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices, key="preview_sheet_select_results")
+            rotate_preview = st.toggle("Rotate preview 90°", value=False, key="preview_rotate_90")
             preview_sheet_idx = sheet_choices.index(preview_sheet_label)
             actual_sheet_idx = preview_sheets[preview_sheet_idx][0]
-            draw_layout_sheet(st.session_state.manual_layout, actual_sheet_idx, template_preview=st.session_state.cix_preview)
+            draw_layout_sheet(
+                st.session_state.manual_layout,
+                actual_sheet_idx,
+                template_preview=st.session_state.cix_preview,
+                rotate_view=rotate_preview,
+            )
 
         if st.session_state.machine_type == "Flat Bed":
             action_col1, action_col2 = st.columns([1, 2])

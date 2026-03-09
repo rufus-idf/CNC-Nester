@@ -180,7 +180,12 @@ def sync_sheet_dims_from_preset():
 
 def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None):
     selected_sheet = layout["sheets"][selected_sheet_idx]
-    fig, ax = plt.subplots(figsize=(3.75, 2.25))
+    indexed_name_map = build_indexed_part_labels(layout, selected_sheet_idx)
+
+    ratio = max(0.25, float(layout["sheet_w"]) / max(float(layout["sheet_h"]), 1.0))
+    fig_w = 12.0
+    fig_h = max(6.0, min(10.0, fig_w / ratio))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=150)
     ax.set_xlim(0, layout["sheet_w"])
     ax.set_ylim(0, layout["sheet_h"])
     ax.set_aspect('equal')
@@ -191,14 +196,30 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
     for part in selected_sheet["parts"]:
         fc = '#5a7' if part.get('rotated') else '#6fa8dc'
         ax.add_patch(patches.Rectangle((part["x"], part["y"]), part["w"], part["h"], fc=fc, ec='#222'))
-        ax.text(part["x"] + part["w"] / 2, part["y"] + part["h"] / 2, f"{part['rid']}\n{int(part['w'])}x{int(part['h'])}", ha='center', va='center', fontsize=7)
+
+        label_text = indexed_name_map.get(part["id"], str(part.get("rid") or "Part"))
+        min_dim = min(float(part["w"]), float(part["h"]))
+        font_size = max(5.0, min(9.5, min_dim / 55.0))
+        ax.text(
+            part["x"] + part["w"] / 2,
+            part["y"] + part["h"] / 2,
+            label_text,
+            ha='center',
+            va='center',
+            fontsize=font_size,
+            color='#0d1b2a',
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.52, "pad": 0.45},
+            clip_on=True,
+            zorder=3,
+        )
 
     boring_points = build_sheet_boring_points(selected_sheet.get("parts", []), tooling_map, template_preview)
     if boring_points:
         ax.scatter([p["x"] for p in boring_points], [p["y"] for p in boring_points], c='#d32f2f', s=28, marker='o', edgecolors='white', linewidths=0.6, zorder=4)
         ax.text(layout["margin"], layout["sheet_h"] - layout["margin"] - 25, f"Borings: {len(boring_points)}", color='#b71c1c', fontsize=8, ha='left', va='top')
 
-    st.pyplot(fig)
+    fig.tight_layout(pad=0.2)
+    st.pyplot(fig, use_container_width=True)
 
 
 def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0, snap_enabled=False, snap_size=10.0, show_snap_grid=False, align_snap_enabled=True, align_snap_tolerance=4.0, kerf_prompt_enabled=True, kerf_prompt_threshold=12.0, measure_enabled=False, measure_clear_seq=0):

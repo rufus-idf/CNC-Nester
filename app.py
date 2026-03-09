@@ -183,8 +183,8 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
     indexed_name_map = build_indexed_part_labels(layout, selected_sheet_idx)
 
     ratio = max(0.25, float(layout["sheet_w"]) / max(float(layout["sheet_h"]), 1.0))
-    fig_w = 12.0
-    fig_h = max(6.0, min(10.0, fig_w / ratio))
+    fig_w = 6.0
+    fig_h = max(3.0, min(5.0, fig_w / ratio))
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=150)
     ax.set_xlim(0, layout["sheet_w"])
     ax.set_ylim(0, layout["sheet_h"])

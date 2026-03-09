@@ -204,6 +204,7 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
 def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overlay_step=20.0, snap_enabled=False, snap_size=10.0, show_snap_grid=False, align_snap_enabled=True, align_snap_tolerance=4.0, kerf_prompt_enabled=True, kerf_prompt_threshold=12.0, measure_enabled=False, measure_clear_seq=0):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     part_ids = [p["id"] for p in selected_sheet["parts"]]
+    indexed_name_map = build_indexed_part_labels(layout, selected_sheet_idx)
 
     grid_rows = []
     if selected_part_id in part_ids:
@@ -214,6 +215,7 @@ def draw_interactive_layout(layout, selected_sheet_idx, selected_part_id, overla
         selected_sheet_idx=selected_sheet_idx,
         selected_part_id=selected_part_id,
         grid_rows=grid_rows,
+        part_labels=indexed_name_map,
         snap_enabled=snap_enabled,
         snap_size=snap_size,
         show_snap_grid=show_snap_grid,

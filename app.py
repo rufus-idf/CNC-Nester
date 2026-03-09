@@ -12,7 +12,7 @@ import pandas as pd
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 
-from manual_layout import initialize_layout_from_packer, move_part, rotate_part_90
+from manual_layout import build_indexed_part_labels, initialize_layout_from_packer, move_part, rotate_part_90
 from manual_tuning_engine import compute_position_grid, compute_visual_guide_grid, legal_bounds, move_part_to
 from manual_tuning_component import manual_tuning_canvas
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
@@ -390,7 +390,11 @@ def manual_tuning_dialog():
     selected_sheet_idx, selected_sheet = editable_sheets[selected_sheet_option]
 
     part_ids = [p["id"] for p in selected_sheet["parts"]]
-    part_label_map = {p["id"]: f"{p['rid']} ({int(p['w'])}x{int(p['h'])})" for p in selected_sheet["parts"]}
+    indexed_name_map = build_indexed_part_labels(layout, selected_sheet_idx)
+    part_label_map = {
+        p["id"]: f"{indexed_name_map.get(p['id'], p['rid'])} ({int(p['w'])}x{int(p['h'])})"
+        for p in selected_sheet["parts"]
+    }
     part_by_id = {p["id"]: p for p in selected_sheet["parts"]}
 
     notice = st.session_state.pop("manual_notice", None)

@@ -59,6 +59,29 @@ def initialize_layout_from_packer(packer, margin, kerf, sheet_w, sheet_h):
     }
 
 
+def build_indexed_part_labels(layout, sheet_index):
+    all_parts = [p for sheet in layout.get("sheets", []) for p in sheet.get("parts", [])]
+    rid_totals = {}
+    for part in all_parts:
+        rid = str(part.get("rid", "Part"))
+        rid_totals[rid] = rid_totals.get(rid, 0) + 1
+
+    rid_seen = {}
+    label_map = {}
+    target_sheet = layout.get("sheets", [])[sheet_index]
+    target_part_ids = {p["id"] for p in target_sheet.get("parts", [])}
+    for part in all_parts:
+        rid = str(part.get("rid", "Part"))
+        rid_seen[rid] = rid_seen.get(rid, 0) + 1
+        if part.get("id") in target_part_ids:
+            if rid_totals[rid] > 1:
+                label_map[part["id"]] = f"{rid} {rid_seen[rid]}"
+            else:
+                label_map[part["id"]] = rid
+
+    return label_map
+
+
 def move_part(layout, sheet_index, part_id, dx, dy):
     new_layout = deepcopy(layout)
     sheet = new_layout["sheets"][sheet_index]

@@ -108,9 +108,18 @@ def apply_pending_loaded_nest():
 # --- HELPERS ---
 
 
+def normalize_panel_dims(width, length):
+    width_val = float(width)
+    length_val = float(length)
+    if length_val > width_val:
+        width_val, length_val = length_val, width_val
+    return width_val, length_val
+
+
 def add_panel(w, l, q, label, grain, mat):
+    normalized_w, normalized_l = normalize_panel_dims(w, l)
     row = {
-        "Label": label, "Width": w, "Length": l, "Qty": q,
+        "Label": label, "Width": normalized_w, "Length": normalized_l, "Qty": q,
         "Grain?": grain, "Material": mat
     }
     st.session_state['panels'].append(row)

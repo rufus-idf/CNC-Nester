@@ -24,6 +24,13 @@ from offcut_stock import build_offcut_stock_rows, normalize_spreadsheet_referenc
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
 
+OFFCUT_STOCK_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo/edit?gid=0#gid=0"
+OFFCUT_STOCK_LOCATION = "I Design Workshop"
+OFFCUT_THICKNESS_BY_PRESET = {
+    "MDF (2800 x 2070)": 18,
+    "Ply (3050 x 1220)": 19,
+}
+
 # --- SESSION STATE ---
 if 'panels' not in st.session_state:
     st.session_state['panels'] = []
@@ -80,13 +87,7 @@ if 'cix_preview' not in st.session_state:
 if 'last_sheet_preset_applied' not in st.session_state:
     st.session_state.last_sheet_preset_applied = "Custom"
 if 'offcut_stock_sheet' not in st.session_state:
-    st.session_state.offcut_stock_sheet = "https://docs.google.com/spreadsheets/d/1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo/edit?gid=0#gid=0"
-if 'offcut_material' not in st.session_state:
-    st.session_state.offcut_material = ""
-if 'offcut_thickness_mm' not in st.session_state:
-    st.session_state.offcut_thickness_mm = ""
-if 'offcut_location' not in st.session_state:
-    st.session_state.offcut_location = ""
+    st.session_state.offcut_stock_sheet = OFFCUT_STOCK_SHEET_URL
 if 'offcut_origin_job' not in st.session_state:
     st.session_state.offcut_origin_job = ""
 
@@ -95,7 +96,6 @@ SHEET_PRESETS = {
     "MDF (2800 x 2070)": (2800.0, 2070.0),
     "Ply (3050 x 1220)": (3050.0, 1220.0),
 }
-
 
 def apply_pending_loaded_nest():
     pending = st.session_state.pop("pending_loaded_nest", None)
@@ -241,6 +241,19 @@ def infer_sheet_preset(sheet_w, sheet_h):
         if (sheet_w, sheet_h) == dims:
             return preset
     return "Custom"
+
+
+def infer_offcut_material(panels):
+    materials = []
+    for panel in panels or []:
+        value = str(panel.get("Material", "")).strip()
+        if value and value not in materials:
+            materials.append(value)
+    return materials[0] if materials else ""
+
+
+def infer_offcut_thickness(sheet_preset):
+    return OFFCUT_THICKNESS_BY_PRESET.get(sheet_preset, "")
 
 
 def sync_sheet_dims_from_preset():
@@ -1050,23 +1063,26 @@ with heat_tab:
                 st.dataframe(pd.DataFrame(offcuts["reusable_offcuts"]), hide_index=True, width="stretch")
 
                 with st.expander("Save reusable offcuts to Google Sheets stock", expanded=False):
-                    st.text_input("Spreadsheet URL or ID", key="offcut_stock_sheet")
-                    export_col1, export_col2, export_col3 = st.columns(3)
-                    export_col1.text_input("Material", key="offcut_material")
-                    export_col2.text_input("Thickness (mm)", key="offcut_thickness_mm")
-                    export_col3.text_input("Location", key="offcut_location")
+                    inferred_material = infer_offcut_material(st.session_state.get("panels", []))
+                    inferred_thickness = infer_offcut_thickness(st.session_state.get("sheet_preset", "Custom"))
+
+                    st.caption(f"Spreadsheet: {OFFCUT_STOCK_SHEET_URL}")
+                    meta_col1, meta_col2, meta_col3 = st.columns(3)
+                    meta_col1.caption(f"Material: {inferred_material or 'Unknown'}")
+                    meta_col2.caption(f"Thickness (mm): {inferred_thickness if inferred_thickness != '' else 'Unknown'}")
+                    meta_col3.caption(f"Location: {OFFCUT_STOCK_LOCATION}")
                     st.text_input("Origin job / batch (optional)", key="offcut_origin_job")
 
-                    if st.button("Push offcuts to Google Sheet", key="push_offcuts_sheet"):
+                    if st.button("Push offcuts to stock", key="push_offcuts_sheet"):
                         try:
                             write_counts = save_offcuts_to_google_sheet(
-                                st.session_state.offcut_stock_sheet,
+                                OFFCUT_STOCK_SHEET_URL,
                                 st.session_state.manual_layout,
                                 selected_sheet,
                                 offcuts["reusable_offcuts"],
-                                material=st.session_state.offcut_material,
-                                thickness_mm=st.session_state.offcut_thickness_mm,
-                                location=st.session_state.offcut_location,
+                                material=inferred_material,
+                                thickness_mm=inferred_thickness,
+                                location=OFFCUT_STOCK_LOCATION,
                                 sheet_origin_job=st.session_state.offcut_origin_job,
                             )
                             st.success(

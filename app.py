@@ -1145,6 +1145,7 @@ with heat_tab:
             metrics_col2.metric("Used area", f"{(offcuts['used_area'] / 1_000_000):.2f} m²")
             metrics_col3.metric("Waste area", f"{(offcuts['waste_area'] / 1_000_000):.2f} m²")
 
+            selected_push_candidates = []
             if offcuts["reusable_offcuts"]:
                 st.caption(f"Reusable offcuts found: {len(offcuts['reusable_offcuts'])}")
 
@@ -1188,7 +1189,7 @@ with heat_tab:
                         st.dataframe(poly_preview_df, hide_index=True, width="stretch")
 
                 st.selectbox(
-                    "Offcut allocation strategy for push",
+                    "Select offcut shape type",
                     ["Rectangles", "L-shape mix", "C-shape mix", "Polygon-max"],
                     key="offcut_strategy",
                 )
@@ -1258,15 +1259,34 @@ with heat_tab:
             ax.add_patch(patches.Rectangle((0, 0), st.session_state.manual_layout["sheet_w"], st.session_state.manual_layout["sheet_h"], fc='#f4f6f8', ec='#2d3748', lw=1.2))
             ax.add_patch(patches.Rectangle((usable["x"], usable["y"]), usable["width"], usable["height"], fc='#eef7ee', ec='#2f855a', lw=1.1, ls='--'))
 
-            for region in free_regions:
-                ax.add_patch(patches.Rectangle((region["x"], region["y"]), region["width"], region["height"], fc='#7fd18b', ec='#2f855a', alpha=0.6, lw=1.0))
-
             for part in parts_regions:
                 ax.add_patch(patches.Rectangle((part["x"], part["y"]), part["width"], part["height"], fc='#6fa8dc', ec='#1f4e79', alpha=0.95, lw=1.0))
 
+            if selected_push_candidates:
+                for candidate in selected_push_candidates:
+                    if str(candidate.get("shape_type", "RECT")).upper() == "L" and candidate.get("vertices"):
+                        vertices = candidate.get("vertices", [])
+                        poly = patches.Polygon(vertices, closed=True, facecolor='#7fd18b', edgecolor='#2f855a', alpha=0.68, linewidth=1.2)
+                        ax.add_patch(poly)
+                    else:
+                        ax.add_patch(patches.Rectangle(
+                            (candidate["x"], candidate["y"]),
+                            candidate["width"],
+                            candidate["height"],
+                            fc='#7fd18b',
+                            ec='#2f855a',
+                            alpha=0.68,
+                            lw=1.0,
+                        ))
+                st.caption(f"Previewing selected strategy: {st.session_state.get('offcut_strategy', 'Rectangles')}")
+            else:
+                for region in free_regions:
+                    ax.add_patch(patches.Rectangle((region["x"], region["y"]), region["width"], region["height"], fc='#7fd18b', ec='#2f855a', alpha=0.6, lw=1.0))
+                st.caption("No strategy selection available; showing all free regions.")
+
             ax.grid(alpha=0.15)
             st.pyplot(fig)
-            st.caption("Green regions represent remaining offcut shape across the full sheet; blue regions are placed panels.")
+            st.caption("Green regions are selected reusable offcuts for the chosen shape type; blue regions are placed panels.")
     else:
         st.info("Run nesting from the Input tab to generate offcut and heat map analytics.")
 

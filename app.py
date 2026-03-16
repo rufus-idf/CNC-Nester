@@ -90,6 +90,8 @@ if 'offcut_stock_sheet' not in st.session_state:
     st.session_state.offcut_stock_sheet = OFFCUT_STOCK_SHEET_URL
 if 'offcut_origin_job' not in st.session_state:
     st.session_state.offcut_origin_job = ""
+if 'show_grain_overlay' not in st.session_state:
+    st.session_state.show_grain_overlay = False
 
 
 SHEET_PRESETS = {
@@ -302,7 +304,36 @@ def rotate_layout_90(layout):
     return rotated_layout
 
 
-def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None, rotate_view=False):
+def _draw_grain_in_rect(ax, x, y, w, h, spacing=35.0, color="#8b6a44", alpha=0.24, lw=0.8):
+    if w <= 0 or h <= 0:
+        return
+    yy = y + (spacing * 0.5)
+    while yy < y + h - 1e-6:
+        ax.plot([x, x + w], [yy, yy], color=color, alpha=alpha, linewidth=lw, zorder=2)
+        yy += spacing
+
+
+def _draw_grain_in_polygon(ax, points, spacing=35.0, color="#8b6a44", alpha=0.28, lw=0.9):
+    if not points:
+        return
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    if max_x <= min_x or max_y <= min_y:
+        return
+
+    clip_patch = patches.Polygon(points, closed=True, facecolor='none', edgecolor='none')
+    ax.add_patch(clip_patch)
+
+    yy = min_y + (spacing * 0.5)
+    while yy < max_y - 1e-6:
+        line, = ax.plot([min_x, max_x], [yy, yy], color=color, alpha=alpha, linewidth=lw, zorder=2)
+        line.set_clip_path(clip_patch)
+        yy += spacing
+
+
+def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None, rotate_view=False, show_grain=False):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     indexed_name_map = build_indexed_part_labels(layout, selected_sheet_idx)
 
@@ -334,6 +365,8 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
 
         fc = '#5a7' if part.get('rotated') else '#6fa8dc'
         ax.add_patch(patches.Rectangle((part_x, part_y), part_w, part_h, fc=fc, ec='#222'))
+        if show_grain:
+            _draw_grain_in_rect(ax, part_x, part_y, part_w, part_h)
 
         label_text = indexed_name_map.get(part["id"], str(part.get("rid") or "Part"))
         min_dim = min(float(part_w), float(part_h))
@@ -963,6 +996,7 @@ with input_tab:
 
 with result_tab:
     st.subheader("Nested Results")
+    st.toggle("Show grain?", key="show_grain_overlay")
     if st.session_state.cix_preview:
         st.markdown("### CIX Machining Preview")
         draw_cix_preview(st.session_state.cix_preview)
@@ -1018,6 +1052,7 @@ with result_tab:
                 actual_sheet_idx,
                 template_preview=st.session_state.cix_preview,
                 rotate_view=rotate_preview,
+                show_grain=st.session_state.get("show_grain_overlay", False),
             )
 
         if st.session_state.machine_type == "Flat Bed":
@@ -1147,6 +1182,7 @@ with heat_tab:
 with stock_tab:
     st.subheader("Offcut Stock")
     st.caption("Live stock view from Google Sheets offcut tabs.")
+    st.caption("Grain overlay: " + ("On" if st.session_state.get("show_grain_overlay", False) else "Off"))
 
     if st.button("Refresh offcut stock", key="refresh_offcut_stock"):
         load_offcut_stock_sheet_data.clear()
@@ -1198,6 +1234,8 @@ with stock_tab:
                         poly_x = xs + [xs[0]]
                         poly_y = ys + [ys[0]]
                         ax.fill(poly_x, poly_y, alpha=0.3, color="#2E86AB")
+                        if st.session_state.get("show_grain_overlay", False):
+                            _draw_grain_in_polygon(ax, points)
                         ax.plot(poly_x, poly_y, color="#1B4F72", linewidth=2)
 
                         min_x, max_x = min(xs), max(xs)

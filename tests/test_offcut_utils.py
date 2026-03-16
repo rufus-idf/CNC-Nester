@@ -1,6 +1,6 @@
 import unittest
 
-from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap
+from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap, build_sheet_offcut_preview
 
 
 class OffcutUtilsTests(unittest.TestCase):
@@ -54,6 +54,29 @@ class OffcutUtilsTests(unittest.TestCase):
         result = calculate_sheet_offcuts(layout, sheet, min_width=20.0, min_height=20.0, min_area=400.0)
 
         self.assertEqual(result["reusable_offcuts"], [])
+
+
+    def test_build_sheet_offcut_preview_returns_parts_and_free_regions(self):
+        layout = {
+            "sheet_w": 200.0,
+            "sheet_h": 100.0,
+            "margin": 0.0,
+        }
+        sheet = {
+            "sheet_index": 0,
+            "parts": [
+                {"x": 0.0, "y": 0.0, "w": 100.0, "h": 100.0},
+            ],
+        }
+
+        preview = build_sheet_offcut_preview(layout, sheet)
+
+        self.assertEqual(preview["usable"]["width"], 200.0)
+        self.assertEqual(preview["usable"]["height"], 100.0)
+        self.assertEqual(len(preview["parts"]), 1)
+        self.assertEqual(len(preview["free_regions"]), 1)
+        self.assertEqual(preview["free_regions"][0]["x"], 100.0)
+        self.assertEqual(preview["free_regions"][0]["width"], 100.0)
 
     def test_build_sheet_usage_heatmap_empty_sheet_cells_are_zero(self):
         layout = {

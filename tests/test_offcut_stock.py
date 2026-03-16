@@ -32,6 +32,25 @@ class OffcutStockTests(unittest.TestCase):
     def test_parse_vertices_json_invalid_returns_empty(self):
         self.assertEqual(parse_vertices_json("not-json"), [])
 
+
+    def test_build_offcut_stock_rows_supports_l_shape_vertices(self):
+        layout = {"sheet_w": 1000.0, "sheet_h": 500.0, "margin": 10.0}
+        sheet = {"sheet_index": 1}
+        reusable = [{
+            "shape_type": "L",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 200.0,
+            "height": 200.0,
+            "area": 30000.0,
+            "vertices": [[0, 0], [200, 0], [200, 50], [50, 50], [50, 200], [0, 200]],
+        }]
+
+        rows = build_offcut_stock_rows(layout, sheet, reusable, captured_at_utc="2026-04-12T14:33:09Z")
+
+        self.assertEqual(rows["offcut_inventory"][0]["shape_type"], "L")
+        self.assertIn("[200.0, 50.0]", rows["offcut_shapes"][0]["vertices_json"])
+
     def test_build_offcut_stock_rows_builds_expected_tabs(self):
         layout = {"sheet_w": 1000.0, "sheet_h": 500.0, "margin": 10.0}
         sheet = {"sheet_index": 1}

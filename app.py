@@ -17,7 +17,7 @@ from manual_tuning_component import manual_tuning_canvas
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
-from offcut_utils import calculate_sheet_offcuts, build_sheet_offcut_preview
+from offcut_utils import calculate_sheet_offcuts, calculate_l_mix_offcuts, build_sheet_offcut_preview
 from offcut_stock import build_offcut_stock_rows, normalize_spreadsheet_reference, parse_vertices_json
 
 # --- PAGE CONFIG ---
@@ -91,6 +91,8 @@ if 'offcut_origin_job' not in st.session_state:
     st.session_state.offcut_origin_job = ""
 if 'show_grain_overlay' not in st.session_state:
     st.session_state.show_grain_overlay = False
+if 'offcut_strategy' not in st.session_state:
+    st.session_state.offcut_strategy = "Rectangles"
 
 
 SHEET_PRESETS = {
@@ -1146,7 +1148,15 @@ with heat_tab:
             if offcuts["reusable_offcuts"]:
                 st.caption(f"Reusable offcuts found: {len(offcuts['reusable_offcuts'])}")
 
-                base_rect_df = pd.DataFrame(offcuts["reusable_offcuts"])
+                rect_candidates = offcuts["reusable_offcuts"]
+                l_mix_candidates = calculate_l_mix_offcuts(
+                    st.session_state.manual_layout,
+                    selected_sheet,
+                    min_width=min_offcut_w,
+                    min_height=min_offcut_h,
+                    min_area=min_offcut_area,
+                )
+
                 rect_tab, l_tab, c_tab, poly_tab = st.tabs([
                     "Rectangles",
                     "L-shape mix",
@@ -1156,30 +1166,45 @@ with heat_tab:
 
                 with rect_tab:
                     st.caption("Current production allocator: rectangle-only offcut candidates.")
-                    st.dataframe(base_rect_df, hide_index=True, width="stretch")
+                    st.dataframe(pd.DataFrame(rect_candidates), hide_index=True, width="stretch")
 
                 with l_tab:
-                    st.caption("UI preview for upcoming L-first allocator (L-shapes first, rectangles fallback).")
-                    l_preview_df = base_rect_df.copy()
-                    l_preview_df["target_shape"] = "L-first (preview)"
-                    l_preview_df["fallback"] = "Rectangle"
-                    st.dataframe(l_preview_df, hide_index=True, width="stretch")
+                    st.caption("L-shapes first; leftover reusable regions remain as rectangles.")
+                    st.dataframe(pd.DataFrame(l_mix_candidates), hide_index=True, width="stretch")
 
                 with c_tab:
-                    st.caption("UI preview for upcoming C-first allocator (C-shapes first, rectangles fallback).")
-                    c_preview_df = base_rect_df.copy()
+                    st.caption("C-shape allocator not implemented yet; using rectangle preview for now.")
+                    c_preview_df = pd.DataFrame(rect_candidates).copy()
                     c_preview_df["target_shape"] = "C-first (preview)"
-                    c_preview_df["fallback"] = "Rectangle"
                     st.dataframe(c_preview_df, hide_index=True, width="stretch")
 
                 with poly_tab:
-                    st.caption("UI preview for upcoming polygon-max allocator (largest connected shape first).")
-                    poly_preview_df = base_rect_df.head(1).copy()
-                    poly_preview_df["target_shape"] = "Polygon-max (preview)"
+                    st.caption("Polygon allocator not implemented yet; showing largest current rectangle candidate.")
+                    poly_preview_df = pd.DataFrame(rect_candidates).head(1).copy()
                     if poly_preview_df.empty:
                         st.caption("No candidate shape available for polygon-max preview.")
                     else:
+                        poly_preview_df["target_shape"] = "Polygon-max (preview)"
                         st.dataframe(poly_preview_df, hide_index=True, width="stretch")
+
+                st.selectbox(
+                    "Offcut allocation strategy for push",
+                    ["Rectangles", "L-shape mix", "C-shape mix", "Polygon-max"],
+                    key="offcut_strategy",
+                )
+
+                if st.session_state.offcut_strategy == "Rectangles":
+                    selected_push_candidates = rect_candidates
+                    st.caption("Push strategy: Rectangles")
+                elif st.session_state.offcut_strategy == "L-shape mix":
+                    selected_push_candidates = l_mix_candidates
+                    st.caption("Push strategy: L-shape mix")
+                elif st.session_state.offcut_strategy == "C-shape mix":
+                    selected_push_candidates = rect_candidates
+                    st.caption("Push strategy: C-shape mix (currently rectangle fallback)")
+                else:
+                    selected_push_candidates = rect_candidates[:1]
+                    st.caption("Push strategy: Polygon-max (currently largest rectangle fallback)")
 
                 with st.expander("Save reusable offcuts to Google Sheets stock", expanded=False):
                     inferred_material = infer_offcut_material(st.session_state.get("panels", []))
@@ -1191,7 +1216,6 @@ with heat_tab:
                     meta_col2.caption(f"Thickness (mm): {inferred_thickness if inferred_thickness != '' else 'Unknown'}")
                     meta_col3.caption(f"Location: {OFFCUT_STOCK_LOCATION}")
                     st.text_input("Origin job / batch (optional)", key="offcut_origin_job")
-                    st.caption("Current push writes rectangle candidates; shape-specific allocators will follow in next step.")
 
                     if st.button("Push offcuts to stock", key="push_offcuts_sheet"):
                         try:
@@ -1199,7 +1223,7 @@ with heat_tab:
                                 OFFCUT_STOCK_SHEET_URL,
                                 st.session_state.manual_layout,
                                 selected_sheet,
-                                offcuts["reusable_offcuts"],
+                                selected_push_candidates,
                                 material=inferred_material,
                                 thickness_mm=inferred_thickness,
                                 location=OFFCUT_STOCK_LOCATION,

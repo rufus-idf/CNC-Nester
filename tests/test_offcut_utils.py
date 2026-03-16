@@ -1,6 +1,6 @@
 import unittest
 
-from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap, build_sheet_offcut_preview
+from offcut_utils import calculate_sheet_offcuts, calculate_l_mix_offcuts, build_sheet_usage_heatmap, build_sheet_offcut_preview
 
 
 class OffcutUtilsTests(unittest.TestCase):
@@ -77,6 +77,24 @@ class OffcutUtilsTests(unittest.TestCase):
         self.assertEqual(len(preview["free_regions"]), 1)
         self.assertEqual(preview["free_regions"][0]["x"], 100.0)
         self.assertEqual(preview["free_regions"][0]["width"], 100.0)
+
+
+    def test_calculate_l_mix_offcuts_detects_l_shape(self):
+        layout = {
+            "sheet_w": 200.0,
+            "sheet_h": 200.0,
+            "margin": 0.0,
+        }
+        sheet = {
+            "sheet_index": 0,
+            "parts": [
+                {"x": 100.0, "y": 100.0, "w": 100.0, "h": 100.0},
+            ],
+        }
+
+        result = calculate_l_mix_offcuts(layout, sheet, min_width=20.0, min_height=20.0, min_area=100.0)
+
+        self.assertTrue(any(r.get("shape_type") == "L" for r in result))
 
     def test_build_sheet_usage_heatmap_empty_sheet_cells_are_zero(self):
         layout = {

@@ -169,8 +169,6 @@ def _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows):
         existing_df = existing if isinstance(existing, pd.DataFrame) else pd.DataFrame()
     except Exception:
         existing_df = pd.DataFrame()
-        conn.create(spreadsheet=spreadsheet_id, worksheet=worksheet_name, data=incoming_df)
-        return len(rows)
 
     existing_df = _sanitize_sheet_df(existing_df)
     merged_df = pd.concat([existing_df, incoming_df], ignore_index=True) if not existing_df.empty else incoming_df
@@ -201,7 +199,10 @@ def save_offcuts_to_google_sheet(spreadsheet_value, layout, sheet, reusable_offc
         try:
             written[worksheet_name] = _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows)
         except Exception as exc:
-            raise RuntimeError(f"{worksheet_name}: {exc}") from exc
+            raise RuntimeError(
+                f"{worksheet_name}: {exc}. Ensure gsheets connection uses Service Account auth, "
+                "the sheet is shared with that service account as Editor, and worksheet tabs exist."
+            ) from exc
 
     return written
 

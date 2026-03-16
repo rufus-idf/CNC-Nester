@@ -333,6 +333,40 @@ def _draw_grain_in_polygon(ax, points, spacing=35.0, color="#8b6a44", alpha=0.28
         yy += spacing
 
 
+def _annotate_polygon_edge_lengths(ax, points):
+    if len(points) < 2:
+        return
+
+    for idx, start in enumerate(points):
+        end = points[(idx + 1) % len(points)]
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        length = (dx ** 2 + dy ** 2) ** 0.5
+        mx = (float(start[0]) + float(end[0])) / 2.0
+        my = (float(start[1]) + float(end[1])) / 2.0
+
+        # push label slightly outward from edge to keep outline readable
+        nx, ny = -dy, dx
+        norm = (nx ** 2 + ny ** 2) ** 0.5
+        if norm > 1e-6:
+            nx /= norm
+            ny /= norm
+        else:
+            nx, ny = 0.0, 0.0
+
+        ax.text(
+            mx + (nx * 14.0),
+            my + (ny * 14.0),
+            f"{length:.1f}",
+            fontsize=8,
+            color="#0b132b",
+            ha="center",
+            va="center",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.75, "pad": 0.2},
+            zorder=5,
+        )
+
+
 def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None, rotate_view=False, show_grain=False):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     indexed_name_map = build_indexed_part_labels(layout, selected_sheet_idx)
@@ -1228,31 +1262,38 @@ with stock_tab:
                     if not points:
                         st.warning("Could not parse offcut geometry points.")
                     else:
-                        xs = [p[0] for p in points]
-                        ys = [p[1] for p in points]
+                        # Offcut coordinates are stored in sheet space; normalize to local origin for stock preview.
+                        min_px = min(p[0] for p in points)
+                        min_py = min(p[1] for p in points)
+                        local_points = [[float(p[0]) - float(min_px), float(p[1]) - float(min_py)] for p in points]
+
+                        xs = [p[0] for p in local_points]
+                        ys = [p[1] for p in local_points]
                         fig, ax = plt.subplots(figsize=(6, 4), dpi=140)
                         poly_x = xs + [xs[0]]
                         poly_y = ys + [ys[0]]
                         ax.fill(poly_x, poly_y, alpha=0.3, color="#2E86AB")
                         if st.session_state.get("show_grain_overlay", False):
-                            _draw_grain_in_polygon(ax, points)
+                            _draw_grain_in_polygon(ax, local_points)
                         ax.plot(poly_x, poly_y, color="#1B4F72", linewidth=2)
+                        _annotate_polygon_edge_lengths(ax, local_points)
 
                         min_x, max_x = min(xs), max(xs)
                         min_y, max_y = min(ys), max(ys)
-                        pad_x = max(20.0, (max_x - min_x) * 0.1)
-                        pad_y = max(20.0, (max_y - min_y) * 0.1)
+                        pad_x = max(20.0, (max_x - min_x) * 0.14)
+                        pad_y = max(20.0, (max_y - min_y) * 0.14)
                         ax.set_xlim(min_x - pad_x, max_x + pad_x)
                         ax.set_ylim(min_y - pad_y, max_y + pad_y)
                         ax.set_aspect('equal', adjustable='box')
-                        ax.set_title(f"Offcut {selected_offcut_id} shape preview")
-                        ax.set_xlabel("X (mm)")
-                        ax.set_ylabel("Y (mm)")
-                        ax.grid(alpha=0.2)
+                        ax.set_title(f"Offcut {selected_offcut_id} (edge lengths in mm)")
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        ax.set_xlabel("")
+                        ax.set_ylabel("")
+                        for spine in ax.spines.values():
+                            spine.set_visible(False)
                         st.pyplot(fig)
-
-                        st.caption("Vertices (mm)")
-                        st.dataframe(pd.DataFrame(points, columns=["x", "y"]), hide_index=True, width="stretch")
+                        st.caption("Edge labels show side length in mm. Offcut is normalized to local origin for preview.")
 
 if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()

@@ -19,6 +19,7 @@ from nest_storage import build_nest_payload, build_sheet_boring_points, create_c
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap
+from offcut_stock import build_offcut_stock_rows, extract_spreadsheet_id
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -78,6 +79,16 @@ if 'cix_preview' not in st.session_state:
     st.session_state.cix_preview = None
 if 'last_sheet_preset_applied' not in st.session_state:
     st.session_state.last_sheet_preset_applied = "Custom"
+if 'offcut_stock_sheet' not in st.session_state:
+    st.session_state.offcut_stock_sheet = "https://docs.google.com/spreadsheets/d/1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo/edit?gid=0#gid=0"
+if 'offcut_material' not in st.session_state:
+    st.session_state.offcut_material = ""
+if 'offcut_thickness_mm' not in st.session_state:
+    st.session_state.offcut_thickness_mm = ""
+if 'offcut_location' not in st.session_state:
+    st.session_state.offcut_location = ""
+if 'offcut_origin_job' not in st.session_state:
+    st.session_state.offcut_origin_job = ""
 
 
 SHEET_PRESETS = {
@@ -137,6 +148,46 @@ def clear_data():
 def load_gsheets_catalog():
     conn = st.connection("gsheets", type=GSheetsConnection)
     return conn.read()
+
+
+def _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows):
+    if not rows:
+        return 0
+
+    existing = conn.read(spreadsheet=spreadsheet_id, worksheet=worksheet_name, ttl=0)
+    existing_df = existing if isinstance(existing, pd.DataFrame) else pd.DataFrame()
+    incoming_df = pd.DataFrame(rows)
+
+    if existing_df.empty:
+        merged_df = incoming_df
+    else:
+        merged_df = pd.concat([existing_df, incoming_df], ignore_index=True)
+
+    conn.update(spreadsheet=spreadsheet_id, worksheet=worksheet_name, data=merged_df)
+    return len(rows)
+
+
+def save_offcuts_to_google_sheet(spreadsheet_value, layout, sheet, reusable_offcuts, *, material="", thickness_mm="", location="", sheet_origin_job=""):
+    spreadsheet_id = extract_spreadsheet_id(spreadsheet_value)
+    if not spreadsheet_id:
+        raise ValueError("Enter a valid Google Sheets URL or spreadsheet ID.")
+
+    export_rows = build_offcut_stock_rows(
+        layout,
+        sheet,
+        reusable_offcuts,
+        material=material,
+        thickness_mm=thickness_mm,
+        location=location,
+        sheet_origin_job=sheet_origin_job,
+    )
+
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    written = {}
+    for worksheet_name, rows in export_rows.items():
+        written[worksheet_name] = _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows)
+
+    return written
 
 
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
@@ -980,6 +1031,36 @@ with heat_tab:
             if offcuts["reusable_offcuts"]:
                 st.caption(f"Reusable offcuts found: {len(offcuts['reusable_offcuts'])}")
                 st.dataframe(pd.DataFrame(offcuts["reusable_offcuts"]), hide_index=True, width="stretch")
+
+                with st.expander("Save reusable offcuts to Google Sheets stock", expanded=False):
+                    st.text_input("Spreadsheet URL or ID", key="offcut_stock_sheet")
+                    export_col1, export_col2, export_col3 = st.columns(3)
+                    export_col1.text_input("Material", key="offcut_material")
+                    export_col2.text_input("Thickness (mm)", key="offcut_thickness_mm")
+                    export_col3.text_input("Location", key="offcut_location")
+                    st.text_input("Origin job / batch (optional)", key="offcut_origin_job")
+
+                    if st.button("Push offcuts to Google Sheet", key="push_offcuts_sheet"):
+                        try:
+                            write_counts = save_offcuts_to_google_sheet(
+                                st.session_state.offcut_stock_sheet,
+                                st.session_state.manual_layout,
+                                selected_sheet,
+                                offcuts["reusable_offcuts"],
+                                material=st.session_state.offcut_material,
+                                thickness_mm=st.session_state.offcut_thickness_mm,
+                                location=st.session_state.offcut_location,
+                                sheet_origin_job=st.session_state.offcut_origin_job,
+                            )
+                            st.success(
+                                "Saved offcuts to Google Sheets: "
+                                f"inventory={write_counts.get('offcut_inventory', 0)}, "
+                                f"shapes={write_counts.get('offcut_shapes', 0)}, "
+                                f"events={write_counts.get('offcut_events', 0)}, "
+                                f"previews={write_counts.get('offcut_previews', 0)}"
+                            )
+                        except Exception as exc:
+                            st.error(f"Could not push offcuts to Google Sheets: {exc}")
             else:
                 st.caption("No reusable offcuts match current filter thresholds.")
 

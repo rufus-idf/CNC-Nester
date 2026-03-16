@@ -499,7 +499,16 @@ def draw_cix_preview(cix_preview):
     )
 
 
-@st.dialog("Manual Nesting Tuning", width="large")
+
+
+def _handle_manual_tuning_dismiss():
+    st.session_state.show_manual_tuning = False
+    st.session_state.manual_layout_draft = None
+    if "manual_part_select" in st.session_state:
+        del st.session_state["manual_part_select"]
+
+
+@st.dialog("Manual Nesting Tuning", width="large", dismissible=True, on_dismiss=_handle_manual_tuning_dismiss)
 def manual_tuning_dialog():
     st.markdown(
         """

@@ -19,7 +19,7 @@ from nest_storage import build_nest_payload, build_sheet_boring_points, create_c
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap
-from offcut_stock import build_offcut_stock_rows, normalize_spreadsheet_reference
+from offcut_stock import build_offcut_stock_rows, normalize_spreadsheet_reference, parse_vertices_json
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -148,6 +148,14 @@ def clear_data():
 def load_gsheets_catalog():
     conn = st.connection("gsheets", type=GSheetsConnection)
     return conn.read()
+
+
+@st.cache_data(ttl=30)
+def load_offcut_stock_sheet_data(spreadsheet_url):
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    inventory_df = conn.read(spreadsheet=spreadsheet_url, worksheet="offcut_inventory", ttl=0)
+    shapes_df = conn.read(spreadsheet=spreadsheet_url, worksheet="offcut_shapes", ttl=0)
+    return inventory_df, shapes_df
 
 
 def _sanitize_sheet_df(df):
@@ -761,7 +769,7 @@ SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
 KERF = st.sidebar.number_input("Kerf", key="kerf")
 MARGIN = st.sidebar.number_input("Margin", key="margin")
 
-input_tab, result_tab, heat_tab = st.tabs(["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts"])
+input_tab, result_tab, heat_tab, stock_tab = st.tabs(["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts", "4️⃣ Offcut Stock"])
 
 with input_tab:
     st.markdown("### Load Nest")
@@ -1125,6 +1133,79 @@ with heat_tab:
                 st.caption("Darker cells are more heavily used by parts; lighter cells indicate likely reclaimable space.")
     else:
         st.info("Run nesting from the Input tab to generate offcut and heat map analytics.")
+
+
+with stock_tab:
+    st.subheader("Offcut Stock")
+    st.caption("Live stock view from Google Sheets offcut tabs.")
+
+    if st.button("Refresh offcut stock", key="refresh_offcut_stock"):
+        load_offcut_stock_sheet_data.clear()
+
+    try:
+        inventory_df, shapes_df = load_offcut_stock_sheet_data(OFFCUT_STOCK_SHEET_URL)
+    except Exception as exc:
+        st.error(f"Could not load offcut stock sheet: {exc}")
+        inventory_df, shapes_df = pd.DataFrame(), pd.DataFrame()
+
+    if inventory_df is None or inventory_df.empty:
+        st.info("No offcut stock records found yet.")
+    else:
+        display_cols = [
+            c for c in [
+                "offcut_id", "status", "material", "thickness_mm", "shape_type", "area_mm2",
+                "bbox_w_mm", "bbox_h_mm", "location", "sheet_origin_job", "captured_at_utc"
+            ] if c in inventory_df.columns
+        ]
+        st.dataframe(inventory_df[display_cols] if display_cols else inventory_df, hide_index=True, width="stretch")
+
+        offcut_options = inventory_df.get("offcut_id", pd.Series(dtype=str)).dropna().astype(str).tolist()
+        if offcut_options:
+            selected_offcut_id = st.selectbox("Preview offcut", offcut_options, key="stock_selected_offcut")
+            selected_row = inventory_df[inventory_df["offcut_id"].astype(str) == selected_offcut_id].head(1)
+
+            if not selected_row.empty:
+                row = selected_row.iloc[0]
+                info_col1, info_col2, info_col3, info_col4 = st.columns(4)
+                info_col1.metric("Shape", str(row.get("shape_type", "")))
+                info_col2.metric("Area (mm²)", f"{row.get('area_mm2', '')}")
+                info_col3.metric("BBox W (mm)", f"{row.get('bbox_w_mm', '')}")
+                info_col4.metric("BBox H (mm)", f"{row.get('bbox_h_mm', '')}")
+
+                shape_row = pd.DataFrame()
+                if isinstance(shapes_df, pd.DataFrame) and not shapes_df.empty and "offcut_id" in shapes_df.columns:
+                    shape_row = shapes_df[shapes_df["offcut_id"].astype(str) == selected_offcut_id].head(1)
+
+                if shape_row.empty:
+                    st.warning("No geometry found for this offcut in offcut_shapes.")
+                else:
+                    points = parse_vertices_json(shape_row.iloc[0].get("vertices_json"))
+                    if not points:
+                        st.warning("Could not parse offcut geometry points.")
+                    else:
+                        xs = [p[0] for p in points]
+                        ys = [p[1] for p in points]
+                        fig, ax = plt.subplots(figsize=(6, 4), dpi=140)
+                        poly_x = xs + [xs[0]]
+                        poly_y = ys + [ys[0]]
+                        ax.fill(poly_x, poly_y, alpha=0.3, color="#2E86AB")
+                        ax.plot(poly_x, poly_y, color="#1B4F72", linewidth=2)
+
+                        min_x, max_x = min(xs), max(xs)
+                        min_y, max_y = min(ys), max(ys)
+                        pad_x = max(20.0, (max_x - min_x) * 0.1)
+                        pad_y = max(20.0, (max_y - min_y) * 0.1)
+                        ax.set_xlim(min_x - pad_x, max_x + pad_x)
+                        ax.set_ylim(min_y - pad_y, max_y + pad_y)
+                        ax.set_aspect('equal', adjustable='box')
+                        ax.set_title(f"Offcut {selected_offcut_id} shape preview")
+                        ax.set_xlabel("X (mm)")
+                        ax.set_ylabel("Y (mm)")
+                        ax.grid(alpha=0.2)
+                        st.pyplot(fig)
+
+                        st.caption("Vertices (mm)")
+                        st.dataframe(pd.DataFrame(points, columns=["x", "y"]), hide_index=True, width="stretch")
 
 if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()

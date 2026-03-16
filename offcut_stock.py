@@ -146,3 +146,30 @@ def normalize_spreadsheet_reference(value: str) -> str:
         return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
 
     return ""
+
+
+
+def parse_vertices_json(value: Any) -> list[list[float]]:
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        raw_points = value
+    else:
+        text = str(value).strip()
+        if not text:
+            return []
+        try:
+            raw_points = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return []
+
+    points: list[list[float]] = []
+    for point in raw_points:
+        if not isinstance(point, (list, tuple)) or len(point) < 2:
+            continue
+        try:
+            points.append([round(float(point[0]), 2), round(float(point[1]), 2)])
+        except (TypeError, ValueError):
+            continue
+    return points

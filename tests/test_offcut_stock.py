@@ -1,6 +1,6 @@
 import unittest
 
-from offcut_stock import build_offcut_stock_rows, extract_spreadsheet_id, normalize_spreadsheet_reference
+from offcut_stock import build_offcut_stock_rows, extract_spreadsheet_id, normalize_spreadsheet_reference, parse_vertices_json
 
 
 class OffcutStockTests(unittest.TestCase):
@@ -23,6 +23,14 @@ class OffcutStockTests(unittest.TestCase):
     def test_normalize_spreadsheet_reference_from_url(self):
         url = "https://docs.google.com/spreadsheets/d/1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo/edit?gid=0#gid=0"
         self.assertEqual(normalize_spreadsheet_reference(url), url)
+
+
+    def test_parse_vertices_json_from_string(self):
+        value = "[[0, 0], [100.5, 0], [100.5, 50], [0, 50]]"
+        self.assertEqual(parse_vertices_json(value), [[0.0, 0.0], [100.5, 0.0], [100.5, 50.0], [0.0, 50.0]])
+
+    def test_parse_vertices_json_invalid_returns_empty(self):
+        self.assertEqual(parse_vertices_json("not-json"), [])
 
     def test_build_offcut_stock_rows_builds_expected_tabs(self):
         layout = {"sheet_w": 1000.0, "sheet_h": 500.0, "margin": 10.0}

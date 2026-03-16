@@ -5,7 +5,6 @@ import json
 import zipfile
 
 import ezdxf
-import altair as alt
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -18,7 +17,7 @@ from manual_tuning_component import manual_tuning_canvas
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
-from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap
+from offcut_utils import calculate_sheet_offcuts, build_sheet_offcut_preview
 from offcut_stock import build_offcut_stock_rows, normalize_spreadsheet_reference, parse_vertices_json
 
 # --- PAGE CONFIG ---
@@ -1183,32 +1182,32 @@ with heat_tab:
             else:
                 st.caption("No reusable offcuts match current filter thresholds.")
 
-            st.markdown("#### Sheet Usage Heat Map")
-            heat_cell = st.number_input("Heat map cell size (mm)", min_value=25.0, value=150.0, step=25.0, key="heatmap_cell_size")
-            heat_rows = build_sheet_usage_heatmap(st.session_state.manual_layout, selected_sheet, cell_size=heat_cell)
-            if heat_rows:
-                heat_df = pd.DataFrame(heat_rows)
-                heat_chart = (
-                    alt.Chart(heat_df)
-                    .mark_rect()
-                    .encode(
-                        x=alt.X("x:Q", title="X (mm)"),
-                        x2="x2:Q",
-                        y=alt.Y("y:Q", title="Y (mm)"),
-                        y2="y2:Q",
-                        color=alt.Color("usage_pct:Q", title="Usage %", scale=alt.Scale(scheme="yelloworangered", domain=[0, 100])),
-                        tooltip=[
-                            alt.Tooltip("x:Q", title="X"),
-                            alt.Tooltip("y:Q", title="Y"),
-                            alt.Tooltip("usage_pct:Q", title="Usage %"),
-                            alt.Tooltip("used_area:Q", title="Used area"),
-                            alt.Tooltip("cell_area:Q", title="Cell area"),
-                        ],
-                    )
-                    .properties(height=360)
-                )
-                st.altair_chart(heat_chart, width="stretch")
-                st.caption("Darker cells are more heavily used by parts; lighter cells indicate likely reclaimable space.")
+            st.markdown("#### Offcut Shape Preview (inverse of panel usage)")
+            preview = build_sheet_offcut_preview(st.session_state.manual_layout, selected_sheet)
+            usable = preview["usable"]
+            parts_regions = preview["parts"]
+            free_regions = preview["free_regions"]
+
+            fig, ax = plt.subplots(figsize=(7, 4.5), dpi=140)
+            ax.set_xlim(0, st.session_state.manual_layout["sheet_w"])
+            ax.set_ylim(0, st.session_state.manual_layout["sheet_h"])
+            ax.set_aspect('equal', adjustable='box')
+            ax.set_title("Sheet offcut map")
+            ax.set_xlabel("X (mm)")
+            ax.set_ylabel("Y (mm)")
+
+            ax.add_patch(patches.Rectangle((0, 0), st.session_state.manual_layout["sheet_w"], st.session_state.manual_layout["sheet_h"], fc='#f4f6f8', ec='#2d3748', lw=1.2))
+            ax.add_patch(patches.Rectangle((usable["x"], usable["y"]), usable["width"], usable["height"], fc='#eef7ee', ec='#2f855a', lw=1.1, ls='--'))
+
+            for region in free_regions:
+                ax.add_patch(patches.Rectangle((region["x"], region["y"]), region["width"], region["height"], fc='#7fd18b', ec='#2f855a', alpha=0.6, lw=1.0))
+
+            for part in parts_regions:
+                ax.add_patch(patches.Rectangle((part["x"], part["y"]), part["width"], part["height"], fc='#6fa8dc', ec='#1f4e79', alpha=0.95, lw=1.0))
+
+            ax.grid(alpha=0.15)
+            st.pyplot(fig)
+            st.caption("Green regions represent remaining offcut shape across the full sheet; blue regions are placed panels.")
     else:
         st.info("Run nesting from the Input tab to generate offcut and heat map analytics.")
 

@@ -19,9 +19,17 @@ from nest_storage import build_nest_payload, build_sheet_boring_points, create_c
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap
+from offcut_stock import build_offcut_stock_rows, normalize_spreadsheet_reference, parse_vertices_json
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
+
+OFFCUT_STOCK_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo/edit?gid=0#gid=0"
+OFFCUT_STOCK_LOCATION = "I Design Workshop"
+OFFCUT_THICKNESS_BY_PRESET = {
+    "MDF (2800 x 2070)": 18,
+    "Ply (3050 x 1220)": 19,
+}
 
 # --- SESSION STATE ---
 if 'panels' not in st.session_state:
@@ -78,13 +86,16 @@ if 'cix_preview' not in st.session_state:
     st.session_state.cix_preview = None
 if 'last_sheet_preset_applied' not in st.session_state:
     st.session_state.last_sheet_preset_applied = "Custom"
+if 'offcut_stock_sheet' not in st.session_state:
+    st.session_state.offcut_stock_sheet = OFFCUT_STOCK_SHEET_URL
+if 'offcut_origin_job' not in st.session_state:
+    st.session_state.offcut_origin_job = ""
 
 
 SHEET_PRESETS = {
     "MDF (2800 x 2070)": (2800.0, 2070.0),
     "Ply (3050 x 1220)": (3050.0, 1220.0),
 }
-
 
 def apply_pending_loaded_nest():
     pending = st.session_state.pop("pending_loaded_nest", None)
@@ -139,6 +150,71 @@ def load_gsheets_catalog():
     return conn.read()
 
 
+@st.cache_data(ttl=30)
+def load_offcut_stock_sheet_data(spreadsheet_url):
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    inventory_df = conn.read(spreadsheet=spreadsheet_url, worksheet="offcut_inventory", ttl=0)
+    shapes_df = conn.read(spreadsheet=spreadsheet_url, worksheet="offcut_shapes", ttl=0)
+    return inventory_df, shapes_df
+
+
+def _sanitize_sheet_df(df):
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    sanitized = df.copy()
+    sanitized = sanitized.where(pd.notnull(sanitized), "")
+    return sanitized
+
+
+def _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows):
+    if not rows:
+        return 0
+
+    incoming_df = _sanitize_sheet_df(pd.DataFrame(rows))
+
+    try:
+        existing = conn.read(spreadsheet=spreadsheet_id, worksheet=worksheet_name, ttl=0)
+        existing_df = existing if isinstance(existing, pd.DataFrame) else pd.DataFrame()
+    except Exception:
+        existing_df = pd.DataFrame()
+
+    existing_df = _sanitize_sheet_df(existing_df)
+    merged_df = pd.concat([existing_df, incoming_df], ignore_index=True) if not existing_df.empty else incoming_df
+    merged_df = _sanitize_sheet_df(merged_df)
+
+    conn.update(spreadsheet=spreadsheet_id, worksheet=worksheet_name, data=merged_df)
+    return len(rows)
+
+
+def save_offcuts_to_google_sheet(spreadsheet_value, layout, sheet, reusable_offcuts, *, material="", thickness_mm="", location="", sheet_origin_job=""):
+    spreadsheet_ref = normalize_spreadsheet_reference(spreadsheet_value)
+    if not spreadsheet_ref:
+        raise ValueError("Enter a valid Google Sheets URL or spreadsheet ID.")
+
+    export_rows = build_offcut_stock_rows(
+        layout,
+        sheet,
+        reusable_offcuts,
+        material=material,
+        thickness_mm=thickness_mm,
+        location=location,
+        sheet_origin_job=sheet_origin_job,
+    )
+
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    written = {}
+    for worksheet_name, rows in export_rows.items():
+        try:
+            written[worksheet_name] = _append_rows_to_sheet(conn, spreadsheet_ref, worksheet_name, rows)
+        except Exception as exc:
+            raise RuntimeError(
+                f"{worksheet_name}: {exc}. Ensure gsheets connection uses Service Account auth, "
+                "the sheet is shared with that service account as Editor, and worksheet tabs exist."
+            ) from exc
+
+    return written
+
+
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
@@ -173,6 +249,19 @@ def infer_sheet_preset(sheet_w, sheet_h):
         if (sheet_w, sheet_h) == dims:
             return preset
     return "Custom"
+
+
+def infer_offcut_material(panels):
+    materials = []
+    for panel in panels or []:
+        value = str(panel.get("Material", "")).strip()
+        if value and value not in materials:
+            materials.append(value)
+    return materials[0] if materials else ""
+
+
+def infer_offcut_thickness(sheet_preset):
+    return OFFCUT_THICKNESS_BY_PRESET.get(sheet_preset, "")
 
 
 def sync_sheet_dims_from_preset():
@@ -680,7 +769,7 @@ SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
 KERF = st.sidebar.number_input("Kerf", key="kerf")
 MARGIN = st.sidebar.number_input("Margin", key="margin")
 
-input_tab, result_tab, heat_tab = st.tabs(["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts"])
+input_tab, result_tab, heat_tab, stock_tab = st.tabs(["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts", "4️⃣ Offcut Stock"])
 
 with input_tab:
     st.markdown("### Load Nest")
@@ -980,6 +1069,39 @@ with heat_tab:
             if offcuts["reusable_offcuts"]:
                 st.caption(f"Reusable offcuts found: {len(offcuts['reusable_offcuts'])}")
                 st.dataframe(pd.DataFrame(offcuts["reusable_offcuts"]), hide_index=True, width="stretch")
+
+                with st.expander("Save reusable offcuts to Google Sheets stock", expanded=False):
+                    inferred_material = infer_offcut_material(st.session_state.get("panels", []))
+                    inferred_thickness = infer_offcut_thickness(st.session_state.get("sheet_preset", "Custom"))
+
+                    st.caption(f"Spreadsheet: {OFFCUT_STOCK_SHEET_URL}")
+                    meta_col1, meta_col2, meta_col3 = st.columns(3)
+                    meta_col1.caption(f"Material: {inferred_material or 'Unknown'}")
+                    meta_col2.caption(f"Thickness (mm): {inferred_thickness if inferred_thickness != '' else 'Unknown'}")
+                    meta_col3.caption(f"Location: {OFFCUT_STOCK_LOCATION}")
+                    st.text_input("Origin job / batch (optional)", key="offcut_origin_job")
+
+                    if st.button("Push offcuts to stock", key="push_offcuts_sheet"):
+                        try:
+                            write_counts = save_offcuts_to_google_sheet(
+                                OFFCUT_STOCK_SHEET_URL,
+                                st.session_state.manual_layout,
+                                selected_sheet,
+                                offcuts["reusable_offcuts"],
+                                material=inferred_material,
+                                thickness_mm=inferred_thickness,
+                                location=OFFCUT_STOCK_LOCATION,
+                                sheet_origin_job=st.session_state.offcut_origin_job,
+                            )
+                            st.success(
+                                "Saved offcuts to Google Sheets: "
+                                f"inventory={write_counts.get('offcut_inventory', 0)}, "
+                                f"shapes={write_counts.get('offcut_shapes', 0)}, "
+                                f"events={write_counts.get('offcut_events', 0)}, "
+                                f"previews={write_counts.get('offcut_previews', 0)}"
+                            )
+                        except Exception as exc:
+                            st.error(f"Could not push offcuts to Google Sheets: {exc}")
             else:
                 st.caption("No reusable offcuts match current filter thresholds.")
 
@@ -1011,6 +1133,79 @@ with heat_tab:
                 st.caption("Darker cells are more heavily used by parts; lighter cells indicate likely reclaimable space.")
     else:
         st.info("Run nesting from the Input tab to generate offcut and heat map analytics.")
+
+
+with stock_tab:
+    st.subheader("Offcut Stock")
+    st.caption("Live stock view from Google Sheets offcut tabs.")
+
+    if st.button("Refresh offcut stock", key="refresh_offcut_stock"):
+        load_offcut_stock_sheet_data.clear()
+
+    try:
+        inventory_df, shapes_df = load_offcut_stock_sheet_data(OFFCUT_STOCK_SHEET_URL)
+    except Exception as exc:
+        st.error(f"Could not load offcut stock sheet: {exc}")
+        inventory_df, shapes_df = pd.DataFrame(), pd.DataFrame()
+
+    if inventory_df is None or inventory_df.empty:
+        st.info("No offcut stock records found yet.")
+    else:
+        display_cols = [
+            c for c in [
+                "offcut_id", "status", "material", "thickness_mm", "shape_type", "area_mm2",
+                "bbox_w_mm", "bbox_h_mm", "location", "sheet_origin_job", "captured_at_utc"
+            ] if c in inventory_df.columns
+        ]
+        st.dataframe(inventory_df[display_cols] if display_cols else inventory_df, hide_index=True, width="stretch")
+
+        offcut_options = inventory_df.get("offcut_id", pd.Series(dtype=str)).dropna().astype(str).tolist()
+        if offcut_options:
+            selected_offcut_id = st.selectbox("Preview offcut", offcut_options, key="stock_selected_offcut")
+            selected_row = inventory_df[inventory_df["offcut_id"].astype(str) == selected_offcut_id].head(1)
+
+            if not selected_row.empty:
+                row = selected_row.iloc[0]
+                info_col1, info_col2, info_col3, info_col4 = st.columns(4)
+                info_col1.metric("Shape", str(row.get("shape_type", "")))
+                info_col2.metric("Area (mm²)", f"{row.get('area_mm2', '')}")
+                info_col3.metric("BBox W (mm)", f"{row.get('bbox_w_mm', '')}")
+                info_col4.metric("BBox H (mm)", f"{row.get('bbox_h_mm', '')}")
+
+                shape_row = pd.DataFrame()
+                if isinstance(shapes_df, pd.DataFrame) and not shapes_df.empty and "offcut_id" in shapes_df.columns:
+                    shape_row = shapes_df[shapes_df["offcut_id"].astype(str) == selected_offcut_id].head(1)
+
+                if shape_row.empty:
+                    st.warning("No geometry found for this offcut in offcut_shapes.")
+                else:
+                    points = parse_vertices_json(shape_row.iloc[0].get("vertices_json"))
+                    if not points:
+                        st.warning("Could not parse offcut geometry points.")
+                    else:
+                        xs = [p[0] for p in points]
+                        ys = [p[1] for p in points]
+                        fig, ax = plt.subplots(figsize=(6, 4), dpi=140)
+                        poly_x = xs + [xs[0]]
+                        poly_y = ys + [ys[0]]
+                        ax.fill(poly_x, poly_y, alpha=0.3, color="#2E86AB")
+                        ax.plot(poly_x, poly_y, color="#1B4F72", linewidth=2)
+
+                        min_x, max_x = min(xs), max(xs)
+                        min_y, max_y = min(ys), max(ys)
+                        pad_x = max(20.0, (max_x - min_x) * 0.1)
+                        pad_y = max(20.0, (max_y - min_y) * 0.1)
+                        ax.set_xlim(min_x - pad_x, max_x + pad_x)
+                        ax.set_ylim(min_y - pad_y, max_y + pad_y)
+                        ax.set_aspect('equal', adjustable='box')
+                        ax.set_title(f"Offcut {selected_offcut_id} shape preview")
+                        ax.set_xlabel("X (mm)")
+                        ax.set_ylabel("Y (mm)")
+                        ax.grid(alpha=0.2)
+                        st.pyplot(fig)
+
+                        st.caption("Vertices (mm)")
+                        st.dataframe(pd.DataFrame(points, columns=["x", "y"]), hide_index=True, width="stretch")
 
 if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()

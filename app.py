@@ -19,7 +19,7 @@ from nest_storage import build_nest_payload, build_sheet_boring_points, create_c
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap
-from offcut_stock import build_offcut_stock_rows, extract_spreadsheet_id
+from offcut_stock import build_offcut_stock_rows, normalize_spreadsheet_reference
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -179,8 +179,8 @@ def _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows):
 
 
 def save_offcuts_to_google_sheet(spreadsheet_value, layout, sheet, reusable_offcuts, *, material="", thickness_mm="", location="", sheet_origin_job=""):
-    spreadsheet_id = extract_spreadsheet_id(spreadsheet_value)
-    if not spreadsheet_id:
+    spreadsheet_ref = normalize_spreadsheet_reference(spreadsheet_value)
+    if not spreadsheet_ref:
         raise ValueError("Enter a valid Google Sheets URL or spreadsheet ID.")
 
     export_rows = build_offcut_stock_rows(
@@ -197,7 +197,7 @@ def save_offcuts_to_google_sheet(spreadsheet_value, layout, sheet, reusable_offc
     written = {}
     for worksheet_name, rows in export_rows.items():
         try:
-            written[worksheet_name] = _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows)
+            written[worksheet_name] = _append_rows_to_sheet(conn, spreadsheet_ref, worksheet_name, rows)
         except Exception as exc:
             raise RuntimeError(
                 f"{worksheet_name}: {exc}. Ensure gsheets connection uses Service Account auth, "

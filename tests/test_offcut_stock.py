@@ -1,6 +1,6 @@
 import unittest
 
-from offcut_stock import build_offcut_stock_rows, extract_spreadsheet_id
+from offcut_stock import build_offcut_stock_rows, extract_spreadsheet_id, normalize_spreadsheet_reference
 
 
 class OffcutStockTests(unittest.TestCase):
@@ -11,6 +11,18 @@ class OffcutStockTests(unittest.TestCase):
     def test_extract_spreadsheet_id_accepts_raw_id(self):
         raw_id = "1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo"
         self.assertEqual(extract_spreadsheet_id(raw_id), raw_id)
+
+
+    def test_normalize_spreadsheet_reference_from_id(self):
+        raw_id = "1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo"
+        self.assertEqual(
+            normalize_spreadsheet_reference(raw_id),
+            "https://docs.google.com/spreadsheets/d/1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo",
+        )
+
+    def test_normalize_spreadsheet_reference_from_url(self):
+        url = "https://docs.google.com/spreadsheets/d/1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo/edit?gid=0#gid=0"
+        self.assertEqual(normalize_spreadsheet_reference(url), url)
 
     def test_build_offcut_stock_rows_builds_expected_tabs(self):
         layout = {"sheet_w": 1000.0, "sheet_h": 500.0, "margin": 10.0}

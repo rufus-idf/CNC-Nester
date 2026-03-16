@@ -131,3 +131,18 @@ def build_offcut_stock_rows(
         "offcut_events": event_rows,
         "offcut_previews": preview_rows,
     }
+
+
+def normalize_spreadsheet_reference(value: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return ""
+
+    if text.startswith("https://docs.google.com/spreadsheets/"):
+        return text
+
+    spreadsheet_id = extract_spreadsheet_id(text)
+    if spreadsheet_id:
+        return f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+
+    return ""

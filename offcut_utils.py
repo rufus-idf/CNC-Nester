@@ -401,6 +401,75 @@ def _is_connected_rect_group(rects):
     return len(seen) == len(rects)
 
 
+def _connected_rect_components(rects):
+    components = []
+    visited = set()
+    for start_idx in range(len(rects)):
+        if start_idx in visited:
+            continue
+        stack = [start_idx]
+        visited.add(start_idx)
+        component_indices = []
+        while stack:
+            current = stack.pop()
+            component_indices.append(current)
+            for idx in range(len(rects)):
+                if idx in visited:
+                    continue
+                if _touches(rects[current], rects[idx]):
+                    visited.add(idx)
+                    stack.append(idx)
+        components.append(component_indices)
+    return components
+
+
+def _largest_rect_in_union(rects):
+    if not rects:
+        return None
+
+    xs = sorted({r['x'] for r in rects} | {r['x'] + r['w'] for r in rects})
+    ys = sorted({r['y'] for r in rects} | {r['y'] + r['h'] for r in rects})
+    if len(xs) < 2 or len(ys) < 2:
+        return None
+
+    occupied = set()
+    for ix in range(len(xs) - 1):
+        cx = (xs[ix] + xs[ix + 1]) / 2.0
+        for iy in range(len(ys) - 1):
+            cy = (ys[iy] + ys[iy + 1]) / 2.0
+            if any((r['x'] <= cx <= r['x'] + r['w']) and (r['y'] <= cy <= r['y'] + r['h']) for r in rects):
+                occupied.add((ix, iy))
+
+    best = None
+    best_area = 0.0
+    for ix1 in range(len(xs) - 1):
+        for ix2 in range(ix1 + 1, len(xs)):
+            width = xs[ix2] - xs[ix1]
+            if width <= 0:
+                continue
+            for iy1 in range(len(ys) - 1):
+                for iy2 in range(iy1 + 1, len(ys)):
+                    height = ys[iy2] - ys[iy1]
+                    if height <= 0:
+                        continue
+                    all_filled = True
+                    for ix in range(ix1, ix2):
+                        for iy in range(iy1, iy2):
+                            if (ix, iy) not in occupied:
+                                all_filled = False
+                                break
+                        if not all_filled:
+                            break
+                    if not all_filled:
+                        continue
+                    area = width * height
+                    if area > best_area:
+                        best_area = area
+                        best = {'x': xs[ix1], 'y': ys[iy1], 'w': width, 'h': height}
+
+    return best
+
+
 def calculate_l_mix_offcuts(layout, sheet, min_width=120.0, min_height=120.0, min_area=25000.0):
     usable, parts = _usable_sheet_and_parts(layout, sheet)
     free_rects = _compute_free_rects(usable, parts)
@@ -470,18 +539,22 @@ def calculate_l_mix_offcuts(layout, sheet, min_width=120.0, min_height=120.0, mi
         used.update(candidate_indices)
         l_shapes.append(candidate)
 
+    remaining_rects = [r for idx, r in enumerate(free_rects) if idx not in used]
+
     rectangles = []
-    for idx, r in enumerate(free_rects):
-        if idx in used:
+    for component_indices in _connected_rect_components(remaining_rects):
+        component_rects = [remaining_rects[idx] for idx in component_indices]
+        largest = _largest_rect_in_union(component_rects)
+        if not largest:
             continue
-        area = r["w"] * r["h"]
-        if r["w"] >= min_width and r["h"] >= min_height and area >= min_area:
+        area = largest["w"] * largest["h"]
+        if largest["w"] >= min_width and largest["h"] >= min_height and area >= min_area:
             rectangles.append({
                 "shape_type": "RECT",
-                "x": round(r["x"], 2),
-                "y": round(r["y"], 2),
-                "width": round(r["w"], 2),
-                "height": round(r["h"], 2),
+                "x": round(largest["x"], 2),
+                "y": round(largest["y"], 2),
+                "width": round(largest["w"], 2),
+                "height": round(largest["h"], 2),
                 "area": round(area, 2),
             })
 

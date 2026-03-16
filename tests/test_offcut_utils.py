@@ -141,6 +141,11 @@ class OffcutUtilsTests(unittest.TestCase):
 
         self.assertEqual(len(l_shapes), 2)
         self.assertEqual(len(rectangles), 1)
+        self.assertEqual(rectangles[0]["x"], 2245.0)
+        self.assertEqual(rectangles[0]["y"], 538.0)
+        self.assertEqual(rectangles[0]["width"], 185.0)
+        self.assertEqual(rectangles[0]["height"], 142.0)
+
 
     def test_build_sheet_usage_heatmap_empty_sheet_cells_are_zero(self):
         layout = {

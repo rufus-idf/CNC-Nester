@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import itertools
+
 
 def _safe_float(value, default=0.0):
     try:
@@ -478,18 +480,12 @@ def calculate_l_mix_offcuts(layout, sheet, min_width=120.0, min_height=120.0, mi
     seen_signatures = set()
     free_rect_count = len(free_rects)
 
-    for combo_size in (2, 3):
+    max_combo_size = min(5, free_rect_count)
+    for combo_size in range(2, max_combo_size + 1):
         if free_rect_count < combo_size:
             continue
-        if combo_size == 2:
-            combos = ((i, j) for i in range(free_rect_count) for j in range(i + 1, free_rect_count))
-        else:
-            combos = (
-                (i, j, k)
-                for i in range(free_rect_count)
-                for j in range(i + 1, free_rect_count)
-                for k in range(j + 1, free_rect_count)
-            )
+
+        combos = itertools.combinations(range(free_rect_count), combo_size)
 
         for indices in combos:
             rect_group = [free_rects[idx] for idx in indices]

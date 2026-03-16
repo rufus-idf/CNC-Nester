@@ -114,6 +114,34 @@ class OffcutUtilsTests(unittest.TestCase):
 
         self.assertFalse(any(r.get("shape_type") == "L" for r in result))
 
+
+    def test_calculate_l_mix_offcuts_can_form_second_l_shape_across_kerf_gaps(self):
+        layout = {
+            "sheet_w": 2440.0,
+            "sheet_h": 1220.0,
+            "margin": 10.0,
+        }
+        sheet = {
+            "sheet_index": 0,
+            "parts": [
+                {"x": 10.0, "y": 10.0, "w": 1914.0, "h": 386.0},
+                {"x": 10.0, "y": 402.0, "w": 1078.0, "h": 136.0},
+                {"x": 1094.0, "y": 402.0, "w": 1064.0, "h": 136.0},
+                {"x": 10.0, "y": 544.0, "w": 741.0, "h": 136.0},
+                {"x": 757.0, "y": 544.0, "w": 735.0, "h": 136.0},
+                {"x": 1498.0, "y": 544.0, "w": 747.0, "h": 136.0},
+                {"x": 10.0, "y": 686.0, "w": 741.0, "h": 136.0},
+            ],
+        }
+
+        result = calculate_l_mix_offcuts(layout, sheet, min_width=60.0, min_height=60.0, min_area=25000.0)
+
+        l_shapes = [r for r in result if r.get("shape_type") == "L"]
+        rectangles = [r for r in result if r.get("shape_type") == "RECT"]
+
+        self.assertEqual(len(l_shapes), 2)
+        self.assertEqual(len(rectangles), 1)
+
     def test_build_sheet_usage_heatmap_empty_sheet_cells_are_zero(self):
         layout = {
             "sheet_w": 200.0,

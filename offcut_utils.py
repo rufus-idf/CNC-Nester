@@ -335,32 +335,123 @@ def _edge_lengths(vertices):
     return lengths
 
 
+def _normalize_polygon_vertices(vertices, min_edge):
+    if len(vertices) < 3:
+        return vertices
+
+    def _collapse_axis(values):
+        sorted_values = sorted(set(values))
+        groups = [[sorted_values[0]]]
+        for value in sorted_values[1:]:
+            if value - groups[-1][-1] < min_edge:
+                groups[-1].append(value)
+            else:
+                groups.append([value])
+
+        mapping = {}
+        for group in groups:
+            representative = group[0]
+            for value in group:
+                mapping[value] = representative
+        return mapping
+
+    x_mapping = _collapse_axis([p[0] for p in vertices])
+    y_mapping = _collapse_axis([p[1] for p in vertices])
+
+    normalized = [[x_mapping[p[0]], y_mapping[p[1]]] for p in vertices]
+
+    deduped = []
+    for point in normalized:
+        if not deduped or deduped[-1] != point:
+            deduped.append(point)
+    if len(deduped) > 1 and deduped[0] == deduped[-1]:
+        deduped.pop()
+
+    changed = True
+    while changed and len(deduped) >= 3:
+        changed = False
+        for idx in range(len(deduped)):
+            prev_point = deduped[idx - 1]
+            curr_point = deduped[idx]
+            next_point = deduped[(idx + 1) % len(deduped)]
+            if (
+                (prev_point[0] == curr_point[0] == next_point[0])
+                or (prev_point[1] == curr_point[1] == next_point[1])
+            ):
+                deduped.pop(idx)
+                changed = True
+                break
+
+    return deduped
+
+
+def _is_connected_rect_group(rects):
+    if not rects:
+        return False
+    seen = {0}
+    stack = [0]
+    while stack:
+        current = stack.pop()
+        for idx in range(len(rects)):
+            if idx in seen:
+                continue
+            if _touches(rects[current], rects[idx]):
+                seen.add(idx)
+                stack.append(idx)
+    return len(seen) == len(rects)
+
+
 def calculate_l_mix_offcuts(layout, sheet, min_width=120.0, min_height=120.0, min_area=25000.0):
     usable, parts = _usable_sheet_and_parts(layout, sheet)
     free_rects = _compute_free_rects(usable, parts)
 
-    pair_candidates = []
-    for i in range(len(free_rects)):
-        for j in range(i + 1, len(free_rects)):
-            a = free_rects[i]
-            b = free_rects[j]
-            if not _touches(a, b):
+    l_candidates = []
+    seen_signatures = set()
+    free_rect_count = len(free_rects)
+
+    for combo_size in (2, 3):
+        if free_rect_count < combo_size:
+            continue
+        if combo_size == 2:
+            combos = ((i, j) for i in range(free_rect_count) for j in range(i + 1, free_rect_count))
+        else:
+            combos = (
+                (i, j, k)
+                for i in range(free_rect_count)
+                for j in range(i + 1, free_rect_count)
+                for k in range(j + 1, free_rect_count)
+            )
+
+        for indices in combos:
+            rect_group = [free_rects[idx] for idx in indices]
+            if not _is_connected_rect_group(rect_group):
                 continue
-            vertices = _polygon_from_rects([a, b])
+
+            raw_vertices = _polygon_from_rects(rect_group)
+            if len(raw_vertices) < 6:
+                continue
+            vertices = _normalize_polygon_vertices(raw_vertices, min_height)
             if not _is_l_shape(vertices):
                 continue
+            if any(edge < min_height for edge in _edge_lengths(vertices)):
+                continue
+
             xs = [v[0] for v in vertices]
             ys = [v[1] for v in vertices]
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
             width = max_x - min_x
             height = max_y - min_y
-            area = (a["w"] * a["h"]) + (b["w"] * b["h"])
+            area = sum(rect["w"] * rect["h"] for rect in rect_group)
             if width < min_width or height < min_height or area < min_area:
                 continue
-            if any(edge < min_height for edge in _edge_lengths(vertices)):
+
+            signature = tuple(tuple(v) for v in vertices)
+            if signature in seen_signatures:
                 continue
-            pair_candidates.append((area, i, j, {
+            seen_signatures.add(signature)
+
+            l_candidates.append((area, set(indices), {
                 "shape_type": "L",
                 "x": round(min_x, 2),
                 "y": round(min_y, 2),
@@ -370,14 +461,13 @@ def calculate_l_mix_offcuts(layout, sheet, min_width=120.0, min_height=120.0, mi
                 "vertices": vertices,
             }))
 
-    pair_candidates.sort(key=lambda x: x[0], reverse=True)
+    l_candidates.sort(key=lambda item: item[0], reverse=True)
     used = set()
     l_shapes = []
-    for _, i, j, candidate in pair_candidates:
-        if i in used or j in used:
+    for _, candidate_indices, candidate in l_candidates:
+        if used.intersection(candidate_indices):
             continue
-        used.add(i)
-        used.add(j)
+        used.update(candidate_indices)
         l_shapes.append(candidate)
 
     rectangles = []

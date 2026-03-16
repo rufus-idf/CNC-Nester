@@ -189,3 +189,42 @@ def build_sheet_usage_heatmap(layout, sheet, cell_size=100.0):
         row_idx += 1
 
     return cells
+
+
+def build_sheet_offcut_preview(layout, sheet):
+    usable, parts = _usable_sheet_and_parts(layout, sheet)
+
+    free_rects = [usable]
+    for part in parts:
+        next_rects = []
+        for free_rect in free_rects:
+            next_rects.extend(_subtract_rect(free_rect, part))
+        free_rects = _prune_contained(next_rects)
+
+    return {
+        "usable": {
+            "x": round(usable["x"], 2),
+            "y": round(usable["y"], 2),
+            "width": round(usable["w"], 2),
+            "height": round(usable["h"], 2),
+        },
+        "parts": [
+            {
+                "x": round(p["x"], 2),
+                "y": round(p["y"], 2),
+                "width": round(p["w"], 2),
+                "height": round(p["h"], 2),
+            }
+            for p in parts
+        ],
+        "free_regions": [
+            {
+                "x": round(r["x"], 2),
+                "y": round(r["y"], 2),
+                "width": round(r["w"], 2),
+                "height": round(r["h"], 2),
+                "area": round(r["w"] * r["h"], 2),
+            }
+            for r in free_rects
+        ],
+    }

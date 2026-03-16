@@ -96,6 +96,24 @@ class OffcutUtilsTests(unittest.TestCase):
 
         self.assertTrue(any(r.get("shape_type") == "L" for r in result))
 
+
+    def test_calculate_l_mix_offcuts_filters_l_shape_with_small_tail_edge(self):
+        layout = {
+            "sheet_w": 120.0,
+            "sheet_h": 120.0,
+            "margin": 0.0,
+        }
+        sheet = {
+            "sheet_index": 0,
+            "parts": [
+                {"x": 0.0, "y": 0.0, "w": 114.0, "h": 114.0},
+            ],
+        }
+
+        result = calculate_l_mix_offcuts(layout, sheet, min_width=50.0, min_height=10.0, min_area=100.0)
+
+        self.assertFalse(any(r.get("shape_type") == "L" for r in result))
+
     def test_build_sheet_usage_heatmap_empty_sheet_cells_are_zero(self):
         layout = {
             "sheet_w": 200.0,

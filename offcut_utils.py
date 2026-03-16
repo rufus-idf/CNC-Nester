@@ -323,6 +323,18 @@ def _is_l_shape(vertices):
     return len(set(xs)) == 3 and len(set(ys)) == 3
 
 
+def _edge_lengths(vertices):
+    if len(vertices) < 2:
+        return []
+    lengths = []
+    for idx, current in enumerate(vertices):
+        nxt = vertices[(idx + 1) % len(vertices)]
+        dx = abs(nxt[0] - current[0])
+        dy = abs(nxt[1] - current[1])
+        lengths.append(max(dx, dy))
+    return lengths
+
+
 def calculate_l_mix_offcuts(layout, sheet, min_width=120.0, min_height=120.0, min_area=25000.0):
     usable, parts = _usable_sheet_and_parts(layout, sheet)
     free_rects = _compute_free_rects(usable, parts)
@@ -345,6 +357,8 @@ def calculate_l_mix_offcuts(layout, sheet, min_width=120.0, min_height=120.0, mi
             height = max_y - min_y
             area = (a["w"] * a["h"]) + (b["w"] * b["h"])
             if width < min_width or height < min_height or area < min_area:
+                continue
+            if any(edge < min_height for edge in _edge_lengths(vertices)):
                 continue
             pair_candidates.append((area, i, j, {
                 "shape_type": "L",

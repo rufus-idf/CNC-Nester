@@ -150,18 +150,31 @@ def load_gsheets_catalog():
     return conn.read()
 
 
+def _sanitize_sheet_df(df):
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    sanitized = df.copy()
+    sanitized = sanitized.where(pd.notnull(sanitized), "")
+    return sanitized
+
+
 def _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows):
     if not rows:
         return 0
 
-    existing = conn.read(spreadsheet=spreadsheet_id, worksheet=worksheet_name, ttl=0)
-    existing_df = existing if isinstance(existing, pd.DataFrame) else pd.DataFrame()
-    incoming_df = pd.DataFrame(rows)
+    incoming_df = _sanitize_sheet_df(pd.DataFrame(rows))
 
-    if existing_df.empty:
-        merged_df = incoming_df
-    else:
-        merged_df = pd.concat([existing_df, incoming_df], ignore_index=True)
+    try:
+        existing = conn.read(spreadsheet=spreadsheet_id, worksheet=worksheet_name, ttl=0)
+        existing_df = existing if isinstance(existing, pd.DataFrame) else pd.DataFrame()
+    except Exception:
+        existing_df = pd.DataFrame()
+        conn.create(spreadsheet=spreadsheet_id, worksheet=worksheet_name, data=incoming_df)
+        return len(rows)
+
+    existing_df = _sanitize_sheet_df(existing_df)
+    merged_df = pd.concat([existing_df, incoming_df], ignore_index=True) if not existing_df.empty else incoming_df
+    merged_df = _sanitize_sheet_df(merged_df)
 
     conn.update(spreadsheet=spreadsheet_id, worksheet=worksheet_name, data=merged_df)
     return len(rows)
@@ -185,7 +198,10 @@ def save_offcuts_to_google_sheet(spreadsheet_value, layout, sheet, reusable_offc
     conn = st.connection("gsheets", type=GSheetsConnection)
     written = {}
     for worksheet_name, rows in export_rows.items():
-        written[worksheet_name] = _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows)
+        try:
+            written[worksheet_name] = _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows)
+        except Exception as exc:
+            raise RuntimeError(f"{worksheet_name}: {exc}") from exc
 
     return written
 

@@ -5,7 +5,6 @@ import json
 import zipfile
 
 import ezdxf
-import altair as alt
 import matplotlib.patches as patches
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -18,10 +17,18 @@ from manual_tuning_component import manual_tuning_canvas
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
 from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
-from offcut_utils import calculate_sheet_offcuts, build_sheet_usage_heatmap
+from offcut_utils import calculate_sheet_offcuts, calculate_l_mix_offcuts, build_sheet_offcut_preview
+from offcut_stock import build_offcut_stock_rows, normalize_spreadsheet_reference, parse_vertices_json
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
+
+OFFCUT_STOCK_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo/edit?gid=0#gid=0"
+OFFCUT_STOCK_LOCATION = "I Design Workshop"
+OFFCUT_THICKNESS_BY_PRESET = {
+    "MDF (2800 x 2070)": 18,
+    "Ply (3050 x 1220)": 19,
+}
 
 # --- SESSION STATE ---
 if 'panels' not in st.session_state:
@@ -78,13 +85,20 @@ if 'cix_preview' not in st.session_state:
     st.session_state.cix_preview = None
 if 'last_sheet_preset_applied' not in st.session_state:
     st.session_state.last_sheet_preset_applied = "Custom"
+if 'offcut_stock_sheet' not in st.session_state:
+    st.session_state.offcut_stock_sheet = OFFCUT_STOCK_SHEET_URL
+if 'offcut_origin_job' not in st.session_state:
+    st.session_state.offcut_origin_job = ""
+if 'show_grain_overlay' not in st.session_state:
+    st.session_state.show_grain_overlay = False
+if 'offcut_strategy' not in st.session_state:
+    st.session_state.offcut_strategy = "Rectangles"
 
 
 SHEET_PRESETS = {
     "MDF (2800 x 2070)": (2800.0, 2070.0),
     "Ply (3050 x 1220)": (3050.0, 1220.0),
 }
-
 
 def apply_pending_loaded_nest():
     pending = st.session_state.pop("pending_loaded_nest", None)
@@ -139,6 +153,71 @@ def load_gsheets_catalog():
     return conn.read()
 
 
+@st.cache_data(ttl=30)
+def load_offcut_stock_sheet_data(spreadsheet_url):
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    inventory_df = conn.read(spreadsheet=spreadsheet_url, worksheet="offcut_inventory", ttl=0)
+    shapes_df = conn.read(spreadsheet=spreadsheet_url, worksheet="offcut_shapes", ttl=0)
+    return inventory_df, shapes_df
+
+
+def _sanitize_sheet_df(df):
+    if df is None or df.empty:
+        return pd.DataFrame() if df is None else df
+    sanitized = df.copy()
+    sanitized = sanitized.where(pd.notnull(sanitized), "")
+    return sanitized
+
+
+def _append_rows_to_sheet(conn, spreadsheet_id, worksheet_name, rows):
+    if not rows:
+        return 0
+
+    incoming_df = _sanitize_sheet_df(pd.DataFrame(rows))
+
+    try:
+        existing = conn.read(spreadsheet=spreadsheet_id, worksheet=worksheet_name, ttl=0)
+        existing_df = existing if isinstance(existing, pd.DataFrame) else pd.DataFrame()
+    except Exception:
+        existing_df = pd.DataFrame()
+
+    existing_df = _sanitize_sheet_df(existing_df)
+    merged_df = pd.concat([existing_df, incoming_df], ignore_index=True) if not existing_df.empty else incoming_df
+    merged_df = _sanitize_sheet_df(merged_df)
+
+    conn.update(spreadsheet=spreadsheet_id, worksheet=worksheet_name, data=merged_df)
+    return len(rows)
+
+
+def save_offcuts_to_google_sheet(spreadsheet_value, layout, sheet, reusable_offcuts, *, material="", thickness_mm="", location="", sheet_origin_job=""):
+    spreadsheet_ref = normalize_spreadsheet_reference(spreadsheet_value)
+    if not spreadsheet_ref:
+        raise ValueError("Enter a valid Google Sheets URL or spreadsheet ID.")
+
+    export_rows = build_offcut_stock_rows(
+        layout,
+        sheet,
+        reusable_offcuts,
+        material=material,
+        thickness_mm=thickness_mm,
+        location=location,
+        sheet_origin_job=sheet_origin_job,
+    )
+
+    conn = st.connection("gsheets", type=GSheetsConnection)
+    written = {}
+    for worksheet_name, rows in export_rows.items():
+        try:
+            written[worksheet_name] = _append_rows_to_sheet(conn, spreadsheet_ref, worksheet_name, rows)
+        except Exception as exc:
+            raise RuntimeError(
+                f"{worksheet_name}: {exc}. Ensure gsheets connection uses Service Account auth, "
+                "the sheet is shared with that service account as Editor, and worksheet tabs exist."
+            ) from exc
+
+    return written
+
+
 def create_dxf_zip(packer, sheet_w, sheet_h, margin, kerf):
     zip_buffer = io.BytesIO()
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
@@ -173,6 +252,19 @@ def infer_sheet_preset(sheet_w, sheet_h):
         if (sheet_w, sheet_h) == dims:
             return preset
     return "Custom"
+
+
+def infer_offcut_material(panels):
+    materials = []
+    for panel in panels or []:
+        value = str(panel.get("Material", "")).strip()
+        if value and value not in materials:
+            materials.append(value)
+    return materials[0] if materials else ""
+
+
+def infer_offcut_thickness(sheet_preset):
+    return OFFCUT_THICKNESS_BY_PRESET.get(sheet_preset, "")
 
 
 def sync_sheet_dims_from_preset():
@@ -213,7 +305,70 @@ def rotate_layout_90(layout):
     return rotated_layout
 
 
-def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None, rotate_view=False):
+def _draw_grain_in_rect(ax, x, y, w, h, spacing=35.0, color="#8b6a44", alpha=0.24, lw=0.8):
+    if w <= 0 or h <= 0:
+        return
+    yy = y + (spacing * 0.5)
+    while yy < y + h - 1e-6:
+        ax.plot([x, x + w], [yy, yy], color=color, alpha=alpha, linewidth=lw, zorder=2)
+        yy += spacing
+
+
+def _draw_grain_in_polygon(ax, points, spacing=35.0, color="#8b6a44", alpha=0.28, lw=0.9):
+    if not points:
+        return
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    if max_x <= min_x or max_y <= min_y:
+        return
+
+    clip_patch = patches.Polygon(points, closed=True, facecolor='none', edgecolor='none')
+    ax.add_patch(clip_patch)
+
+    yy = min_y + (spacing * 0.5)
+    while yy < max_y - 1e-6:
+        line, = ax.plot([min_x, max_x], [yy, yy], color=color, alpha=alpha, linewidth=lw, zorder=2)
+        line.set_clip_path(clip_patch)
+        yy += spacing
+
+
+def _annotate_polygon_edge_lengths(ax, points):
+    if len(points) < 2:
+        return
+
+    for idx, start in enumerate(points):
+        end = points[(idx + 1) % len(points)]
+        dx = float(end[0]) - float(start[0])
+        dy = float(end[1]) - float(start[1])
+        length = (dx ** 2 + dy ** 2) ** 0.5
+        mx = (float(start[0]) + float(end[0])) / 2.0
+        my = (float(start[1]) + float(end[1])) / 2.0
+
+        # push label slightly outward from edge to keep outline readable
+        nx, ny = -dy, dx
+        norm = (nx ** 2 + ny ** 2) ** 0.5
+        if norm > 1e-6:
+            nx /= norm
+            ny /= norm
+        else:
+            nx, ny = 0.0, 0.0
+
+        ax.text(
+            mx + (nx * 14.0),
+            my + (ny * 14.0),
+            f"{length:.1f}",
+            fontsize=8,
+            color="#0b132b",
+            ha="center",
+            va="center",
+            bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.75, "pad": 0.2},
+            zorder=5,
+        )
+
+
+def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None, rotate_view=False, show_grain=False):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     indexed_name_map = build_indexed_part_labels(layout, selected_sheet_idx)
 
@@ -245,6 +400,8 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
 
         fc = '#5a7' if part.get('rotated') else '#6fa8dc'
         ax.add_patch(patches.Rectangle((part_x, part_y), part_w, part_h, fc=fc, ec='#222'))
+        if show_grain:
+            _draw_grain_in_rect(ax, part_x, part_y, part_w, part_h)
 
         label_text = indexed_name_map.get(part["id"], str(part.get("rid") or "Part"))
         min_dim = min(float(part_w), float(part_h))
@@ -410,7 +567,16 @@ def draw_cix_preview(cix_preview):
     )
 
 
-@st.dialog("Manual Nesting Tuning", width="large")
+
+
+def _handle_manual_tuning_dismiss():
+    st.session_state.show_manual_tuning = False
+    st.session_state.manual_layout_draft = None
+    if "manual_part_select" in st.session_state:
+        del st.session_state["manual_part_select"]
+
+
+@st.dialog("Manual Nesting Tuning", width="large", dismissible=True, on_dismiss=_handle_manual_tuning_dismiss)
 def manual_tuning_dialog():
     st.markdown(
         """
@@ -680,7 +846,7 @@ SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
 KERF = st.sidebar.number_input("Kerf", key="kerf")
 MARGIN = st.sidebar.number_input("Margin", key="margin")
 
-input_tab, result_tab, heat_tab = st.tabs(["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts"])
+input_tab, result_tab, heat_tab, stock_tab = st.tabs(["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts", "4️⃣ Offcut Stock"])
 
 with input_tab:
     st.markdown("### Load Nest")
@@ -865,6 +1031,7 @@ with input_tab:
 
 with result_tab:
     st.subheader("Nested Results")
+    st.toggle("Show grain?", key="show_grain_overlay")
     if st.session_state.cix_preview:
         st.markdown("### CIX Machining Preview")
         draw_cix_preview(st.session_state.cix_preview)
@@ -920,6 +1087,7 @@ with result_tab:
                 actual_sheet_idx,
                 template_preview=st.session_state.cix_preview,
                 rotate_view=rotate_preview,
+                show_grain=st.session_state.get("show_grain_overlay", False),
             )
 
         if st.session_state.machine_type == "Flat Bed":
@@ -977,40 +1145,233 @@ with heat_tab:
             metrics_col2.metric("Used area", f"{(offcuts['used_area'] / 1_000_000):.2f} m²")
             metrics_col3.metric("Waste area", f"{(offcuts['waste_area'] / 1_000_000):.2f} m²")
 
+            selected_push_candidates = []
             if offcuts["reusable_offcuts"]:
                 st.caption(f"Reusable offcuts found: {len(offcuts['reusable_offcuts'])}")
-                st.dataframe(pd.DataFrame(offcuts["reusable_offcuts"]), hide_index=True, width="stretch")
+
+                rect_candidates = offcuts["reusable_offcuts"]
+                l_mix_candidates = calculate_l_mix_offcuts(
+                    st.session_state.manual_layout,
+                    selected_sheet,
+                    min_width=min_offcut_w,
+                    min_height=min_offcut_h,
+                    min_area=min_offcut_area,
+                )
+
+                rect_tab, l_tab, c_tab, poly_tab = st.tabs([
+                    "Rectangles",
+                    "L-shape mix",
+                    "C-shape mix",
+                    "Polygon-max",
+                ])
+
+                with rect_tab:
+                    st.caption("Current production allocator: rectangle-only offcut candidates.")
+                    st.dataframe(pd.DataFrame(rect_candidates), hide_index=True, width="stretch")
+
+                with l_tab:
+                    st.caption("L-shapes first; leftover reusable regions remain as rectangles.")
+                    st.dataframe(pd.DataFrame(l_mix_candidates), hide_index=True, width="stretch")
+
+                with c_tab:
+                    st.caption("C-shape allocator not implemented yet; using rectangle preview for now.")
+                    c_preview_df = pd.DataFrame(rect_candidates).copy()
+                    c_preview_df["target_shape"] = "C-first (preview)"
+                    st.dataframe(c_preview_df, hide_index=True, width="stretch")
+
+                with poly_tab:
+                    st.caption("Polygon allocator not implemented yet; showing largest current rectangle candidate.")
+                    poly_preview_df = pd.DataFrame(rect_candidates).head(1).copy()
+                    if poly_preview_df.empty:
+                        st.caption("No candidate shape available for polygon-max preview.")
+                    else:
+                        poly_preview_df["target_shape"] = "Polygon-max (preview)"
+                        st.dataframe(poly_preview_df, hide_index=True, width="stretch")
+
+                st.selectbox(
+                    "Select offcut shape type",
+                    ["Rectangles", "L-shape mix", "C-shape mix", "Polygon-max"],
+                    key="offcut_strategy",
+                )
+
+                if st.session_state.offcut_strategy == "Rectangles":
+                    selected_push_candidates = rect_candidates
+                    st.caption("Push strategy: Rectangles")
+                elif st.session_state.offcut_strategy == "L-shape mix":
+                    selected_push_candidates = l_mix_candidates
+                    st.caption("Push strategy: L-shape mix")
+                elif st.session_state.offcut_strategy == "C-shape mix":
+                    selected_push_candidates = rect_candidates
+                    st.caption("Push strategy: C-shape mix (currently rectangle fallback)")
+                else:
+                    selected_push_candidates = rect_candidates[:1]
+                    st.caption("Push strategy: Polygon-max (currently largest rectangle fallback)")
+
+                with st.expander("Save reusable offcuts to Google Sheets stock", expanded=False):
+                    inferred_material = infer_offcut_material(st.session_state.get("panels", []))
+                    inferred_thickness = infer_offcut_thickness(st.session_state.get("sheet_preset", "Custom"))
+
+                    st.caption(f"Spreadsheet: {OFFCUT_STOCK_SHEET_URL}")
+                    meta_col1, meta_col2, meta_col3 = st.columns(3)
+                    meta_col1.caption(f"Material: {inferred_material or 'Unknown'}")
+                    meta_col2.caption(f"Thickness (mm): {inferred_thickness if inferred_thickness != '' else 'Unknown'}")
+                    meta_col3.caption(f"Location: {OFFCUT_STOCK_LOCATION}")
+                    st.text_input("Origin job / batch (optional)", key="offcut_origin_job")
+
+                    if st.button("Push offcuts to stock", key="push_offcuts_sheet"):
+                        try:
+                            write_counts = save_offcuts_to_google_sheet(
+                                OFFCUT_STOCK_SHEET_URL,
+                                st.session_state.manual_layout,
+                                selected_sheet,
+                                selected_push_candidates,
+                                material=inferred_material,
+                                thickness_mm=inferred_thickness,
+                                location=OFFCUT_STOCK_LOCATION,
+                                sheet_origin_job=st.session_state.offcut_origin_job,
+                            )
+                            st.success(
+                                "Saved offcuts to Google Sheets: "
+                                f"inventory={write_counts.get('offcut_inventory', 0)}, "
+                                f"shapes={write_counts.get('offcut_shapes', 0)}, "
+                                f"events={write_counts.get('offcut_events', 0)}, "
+                                f"previews={write_counts.get('offcut_previews', 0)}"
+                            )
+                        except Exception as exc:
+                            st.error(f"Could not push offcuts to Google Sheets: {exc}")
             else:
                 st.caption("No reusable offcuts match current filter thresholds.")
 
-            st.markdown("#### Sheet Usage Heat Map")
-            heat_cell = st.number_input("Heat map cell size (mm)", min_value=25.0, value=150.0, step=25.0, key="heatmap_cell_size")
-            heat_rows = build_sheet_usage_heatmap(st.session_state.manual_layout, selected_sheet, cell_size=heat_cell)
-            if heat_rows:
-                heat_df = pd.DataFrame(heat_rows)
-                heat_chart = (
-                    alt.Chart(heat_df)
-                    .mark_rect()
-                    .encode(
-                        x=alt.X("x:Q", title="X (mm)"),
-                        x2="x2:Q",
-                        y=alt.Y("y:Q", title="Y (mm)"),
-                        y2="y2:Q",
-                        color=alt.Color("usage_pct:Q", title="Usage %", scale=alt.Scale(scheme="yelloworangered", domain=[0, 100])),
-                        tooltip=[
-                            alt.Tooltip("x:Q", title="X"),
-                            alt.Tooltip("y:Q", title="Y"),
-                            alt.Tooltip("usage_pct:Q", title="Usage %"),
-                            alt.Tooltip("used_area:Q", title="Used area"),
-                            alt.Tooltip("cell_area:Q", title="Cell area"),
-                        ],
-                    )
-                    .properties(height=360)
-                )
-                st.altair_chart(heat_chart, width="stretch")
-                st.caption("Darker cells are more heavily used by parts; lighter cells indicate likely reclaimable space.")
+            st.markdown("#### Offcut Shape Preview (inverse of panel usage)")
+            preview = build_sheet_offcut_preview(st.session_state.manual_layout, selected_sheet)
+            usable = preview["usable"]
+            parts_regions = preview["parts"]
+            free_regions = preview["free_regions"]
+
+            fig, ax = plt.subplots(figsize=(7, 4.5), dpi=140)
+            ax.set_xlim(0, st.session_state.manual_layout["sheet_w"])
+            ax.set_ylim(0, st.session_state.manual_layout["sheet_h"])
+            ax.set_aspect('equal', adjustable='box')
+            ax.set_title("Sheet offcut map")
+            ax.set_xlabel("X (mm)")
+            ax.set_ylabel("Y (mm)")
+
+            ax.add_patch(patches.Rectangle((0, 0), st.session_state.manual_layout["sheet_w"], st.session_state.manual_layout["sheet_h"], fc='#f4f6f8', ec='#2d3748', lw=1.2))
+            ax.add_patch(patches.Rectangle((usable["x"], usable["y"]), usable["width"], usable["height"], fc='#eef7ee', ec='#2f855a', lw=1.1, ls='--'))
+
+            for part in parts_regions:
+                ax.add_patch(patches.Rectangle((part["x"], part["y"]), part["width"], part["height"], fc='#6fa8dc', ec='#1f4e79', alpha=0.95, lw=1.0))
+
+            if selected_push_candidates:
+                for candidate in selected_push_candidates:
+                    if str(candidate.get("shape_type", "RECT")).upper() == "L" and candidate.get("vertices"):
+                        vertices = candidate.get("vertices", [])
+                        poly = patches.Polygon(vertices, closed=True, facecolor='#7fd18b', edgecolor='#2f855a', alpha=0.68, linewidth=1.2)
+                        ax.add_patch(poly)
+                    else:
+                        ax.add_patch(patches.Rectangle(
+                            (candidate["x"], candidate["y"]),
+                            candidate["width"],
+                            candidate["height"],
+                            fc='#7fd18b',
+                            ec='#2f855a',
+                            alpha=0.68,
+                            lw=1.0,
+                        ))
+                st.caption(f"Previewing selected strategy: {st.session_state.get('offcut_strategy', 'Rectangles')}")
+            else:
+                for region in free_regions:
+                    ax.add_patch(patches.Rectangle((region["x"], region["y"]), region["width"], region["height"], fc='#7fd18b', ec='#2f855a', alpha=0.6, lw=1.0))
+                st.caption("No strategy selection available; showing all free regions.")
+
+            ax.grid(alpha=0.15)
+            st.pyplot(fig)
+            st.caption("Green regions are selected reusable offcuts for the chosen shape type; blue regions are placed panels.")
     else:
         st.info("Run nesting from the Input tab to generate offcut and heat map analytics.")
+
+
+with stock_tab:
+    st.subheader("Offcut Stock")
+    st.caption("Live stock view from Google Sheets offcut tabs.")
+    st.caption("Grain overlay: " + ("On" if st.session_state.get("show_grain_overlay", False) else "Off"))
+
+    if st.button("Refresh offcut stock", key="refresh_offcut_stock"):
+        load_offcut_stock_sheet_data.clear()
+
+    try:
+        inventory_df, shapes_df = load_offcut_stock_sheet_data(OFFCUT_STOCK_SHEET_URL)
+    except Exception as exc:
+        st.error(f"Could not load offcut stock sheet: {exc}")
+        inventory_df, shapes_df = pd.DataFrame(), pd.DataFrame()
+
+    if inventory_df is None or inventory_df.empty:
+        st.info("No offcut stock records found yet.")
+    else:
+        display_cols = [
+            c for c in [
+                "offcut_id", "status", "material", "thickness_mm", "shape_type", "area_mm2",
+                "bbox_w_mm", "bbox_h_mm", "location", "sheet_origin_job", "captured_at_utc"
+            ] if c in inventory_df.columns
+        ]
+        st.dataframe(inventory_df[display_cols] if display_cols else inventory_df, hide_index=True, width="stretch")
+
+        offcut_options = inventory_df.get("offcut_id", pd.Series(dtype=str)).dropna().astype(str).tolist()
+        if offcut_options:
+            selected_offcut_id = st.selectbox("Preview offcut", offcut_options, key="stock_selected_offcut")
+            selected_row = inventory_df[inventory_df["offcut_id"].astype(str) == selected_offcut_id].head(1)
+
+            if not selected_row.empty:
+                row = selected_row.iloc[0]
+                info_col1, info_col2, info_col3, info_col4 = st.columns(4)
+                info_col1.metric("Shape", str(row.get("shape_type", "")))
+                info_col2.metric("Area (mm²)", f"{row.get('area_mm2', '')}")
+                info_col3.metric("BBox W (mm)", f"{row.get('bbox_w_mm', '')}")
+                info_col4.metric("BBox H (mm)", f"{row.get('bbox_h_mm', '')}")
+
+                shape_row = pd.DataFrame()
+                if isinstance(shapes_df, pd.DataFrame) and not shapes_df.empty and "offcut_id" in shapes_df.columns:
+                    shape_row = shapes_df[shapes_df["offcut_id"].astype(str) == selected_offcut_id].head(1)
+
+                if shape_row.empty:
+                    st.warning("No geometry found for this offcut in offcut_shapes.")
+                else:
+                    points = parse_vertices_json(shape_row.iloc[0].get("vertices_json"))
+                    if not points:
+                        st.warning("Could not parse offcut geometry points.")
+                    else:
+                        # Offcut coordinates are stored in sheet space; normalize to local origin for stock preview.
+                        min_px = min(p[0] for p in points)
+                        min_py = min(p[1] for p in points)
+                        local_points = [[float(p[0]) - float(min_px), float(p[1]) - float(min_py)] for p in points]
+
+                        xs = [p[0] for p in local_points]
+                        ys = [p[1] for p in local_points]
+                        fig, ax = plt.subplots(figsize=(6, 4), dpi=140)
+                        poly_x = xs + [xs[0]]
+                        poly_y = ys + [ys[0]]
+                        ax.fill(poly_x, poly_y, alpha=0.3, color="#2E86AB")
+                        if st.session_state.get("show_grain_overlay", False):
+                            _draw_grain_in_polygon(ax, local_points)
+                        ax.plot(poly_x, poly_y, color="#1B4F72", linewidth=2)
+                        _annotate_polygon_edge_lengths(ax, local_points)
+
+                        min_x, max_x = min(xs), max(xs)
+                        min_y, max_y = min(ys), max(ys)
+                        pad_x = max(20.0, (max_x - min_x) * 0.14)
+                        pad_y = max(20.0, (max_y - min_y) * 0.14)
+                        ax.set_xlim(min_x - pad_x, max_x + pad_x)
+                        ax.set_ylim(min_y - pad_y, max_y + pad_y)
+                        ax.set_aspect('equal', adjustable='box')
+                        ax.set_title(f"Offcut {selected_offcut_id} (edge lengths in mm)")
+                        ax.set_xticks([])
+                        ax.set_yticks([])
+                        ax.set_xlabel("")
+                        ax.set_ylabel("")
+                        for spine in ax.spines.values():
+                            spine.set_visible(False)
+                        st.pyplot(fig)
+                        st.caption("Edge labels show side length in mm. Offcut is normalized to local origin for preview.")
 
 if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()

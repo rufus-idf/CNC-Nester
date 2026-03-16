@@ -96,6 +96,57 @@ class OffcutUtilsTests(unittest.TestCase):
 
         self.assertTrue(any(r.get("shape_type") == "L" for r in result))
 
+
+    def test_calculate_l_mix_offcuts_filters_l_shape_with_small_tail_edge(self):
+        layout = {
+            "sheet_w": 120.0,
+            "sheet_h": 120.0,
+            "margin": 0.0,
+        }
+        sheet = {
+            "sheet_index": 0,
+            "parts": [
+                {"x": 0.0, "y": 0.0, "w": 114.0, "h": 114.0},
+            ],
+        }
+
+        result = calculate_l_mix_offcuts(layout, sheet, min_width=50.0, min_height=10.0, min_area=100.0)
+
+        self.assertFalse(any(r.get("shape_type") == "L" for r in result))
+
+
+    def test_calculate_l_mix_offcuts_can_form_second_l_shape_across_kerf_gaps(self):
+        layout = {
+            "sheet_w": 2440.0,
+            "sheet_h": 1220.0,
+            "margin": 10.0,
+        }
+        sheet = {
+            "sheet_index": 0,
+            "parts": [
+                {"x": 10.0, "y": 10.0, "w": 1914.0, "h": 386.0},
+                {"x": 10.0, "y": 402.0, "w": 1078.0, "h": 136.0},
+                {"x": 1094.0, "y": 402.0, "w": 1064.0, "h": 136.0},
+                {"x": 10.0, "y": 544.0, "w": 741.0, "h": 136.0},
+                {"x": 757.0, "y": 544.0, "w": 735.0, "h": 136.0},
+                {"x": 1498.0, "y": 544.0, "w": 747.0, "h": 136.0},
+                {"x": 10.0, "y": 686.0, "w": 741.0, "h": 136.0},
+            ],
+        }
+
+        result = calculate_l_mix_offcuts(layout, sheet, min_width=60.0, min_height=60.0, min_area=25000.0)
+
+        l_shapes = [r for r in result if r.get("shape_type") == "L"]
+        rectangles = [r for r in result if r.get("shape_type") == "RECT"]
+
+        self.assertEqual(len(l_shapes), 2)
+        self.assertEqual(len(rectangles), 1)
+        self.assertEqual(rectangles[0]["x"], 2245.0)
+        self.assertEqual(rectangles[0]["y"], 538.0)
+        self.assertEqual(rectangles[0]["width"], 185.0)
+        self.assertEqual(rectangles[0]["height"], 142.0)
+
+
     def test_build_sheet_usage_heatmap_empty_sheet_cells_are_zero(self):
         layout = {
             "sheet_w": 200.0,

@@ -1145,7 +1145,41 @@ with heat_tab:
 
             if offcuts["reusable_offcuts"]:
                 st.caption(f"Reusable offcuts found: {len(offcuts['reusable_offcuts'])}")
-                st.dataframe(pd.DataFrame(offcuts["reusable_offcuts"]), hide_index=True, width="stretch")
+
+                base_rect_df = pd.DataFrame(offcuts["reusable_offcuts"])
+                rect_tab, l_tab, c_tab, poly_tab = st.tabs([
+                    "Rectangles",
+                    "L-shape mix",
+                    "C-shape mix",
+                    "Polygon-max",
+                ])
+
+                with rect_tab:
+                    st.caption("Current production allocator: rectangle-only offcut candidates.")
+                    st.dataframe(base_rect_df, hide_index=True, width="stretch")
+
+                with l_tab:
+                    st.caption("UI preview for upcoming L-first allocator (L-shapes first, rectangles fallback).")
+                    l_preview_df = base_rect_df.copy()
+                    l_preview_df["target_shape"] = "L-first (preview)"
+                    l_preview_df["fallback"] = "Rectangle"
+                    st.dataframe(l_preview_df, hide_index=True, width="stretch")
+
+                with c_tab:
+                    st.caption("UI preview for upcoming C-first allocator (C-shapes first, rectangles fallback).")
+                    c_preview_df = base_rect_df.copy()
+                    c_preview_df["target_shape"] = "C-first (preview)"
+                    c_preview_df["fallback"] = "Rectangle"
+                    st.dataframe(c_preview_df, hide_index=True, width="stretch")
+
+                with poly_tab:
+                    st.caption("UI preview for upcoming polygon-max allocator (largest connected shape first).")
+                    poly_preview_df = base_rect_df.head(1).copy()
+                    poly_preview_df["target_shape"] = "Polygon-max (preview)"
+                    if poly_preview_df.empty:
+                        st.caption("No candidate shape available for polygon-max preview.")
+                    else:
+                        st.dataframe(poly_preview_df, hide_index=True, width="stretch")
 
                 with st.expander("Save reusable offcuts to Google Sheets stock", expanded=False):
                     inferred_material = infer_offcut_material(st.session_state.get("panels", []))
@@ -1157,6 +1191,7 @@ with heat_tab:
                     meta_col2.caption(f"Thickness (mm): {inferred_thickness if inferred_thickness != '' else 'Unknown'}")
                     meta_col3.caption(f"Location: {OFFCUT_STOCK_LOCATION}")
                     st.text_input("Origin job / batch (optional)", key="offcut_origin_job")
+                    st.caption("Current push writes rectangle candidates; shape-specific allocators will follow in next step.")
 
                     if st.button("Push offcuts to stock", key="push_offcuts_sheet"):
                         try:

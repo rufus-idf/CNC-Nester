@@ -337,6 +337,16 @@ def _edge_lengths(vertices):
     return lengths
 
 
+def _polygon_area(vertices):
+    if len(vertices) < 3:
+        return 0.0
+    area = 0.0
+    for idx, current in enumerate(vertices):
+        nxt = vertices[(idx + 1) % len(vertices)]
+        area += (current[0] * nxt[1]) - (nxt[0] * current[1])
+    return abs(area) / 2.0
+
+
 def _normalize_polygon_vertices(vertices, min_edge):
     if len(vertices) < 3:
         return vertices
@@ -385,6 +395,45 @@ def _normalize_polygon_vertices(vertices, min_edge):
                 break
 
     return deduped
+
+
+def _point_in_polygon(x, y, vertices):
+    inside = False
+    j = len(vertices) - 1
+    for i in range(len(vertices)):
+        xi, yi = vertices[i]
+        xj, yj = vertices[j]
+        intersects = ((yi > y) != (yj > y)) and (
+            x < (xj - xi) * (y - yi) / ((yj - yi) if abs(yj - yi) > 1e-9 else 1e-9) + xi
+        )
+        if intersects:
+            inside = not inside
+        j = i
+    return inside
+
+
+def _polygon_within_rect_union(vertices, rects):
+    if len(vertices) < 3:
+        return False
+    xs = sorted({p[0] for p in vertices} | {r['x'] for r in rects} | {r['x'] + r['w'] for r in rects})
+    ys = sorted({p[1] for p in vertices} | {r['y'] for r in rects} | {r['y'] + r['h'] for r in rects})
+    if len(xs) < 2 or len(ys) < 2:
+        return False
+
+    for ix in range(len(xs) - 1):
+        cx = (xs[ix] + xs[ix + 1]) / 2.0
+        for iy in range(len(ys) - 1):
+            cy = (ys[iy] + ys[iy + 1]) / 2.0
+            in_poly = _point_in_polygon(cx, cy, vertices)
+            if not in_poly:
+                continue
+            in_union = any(
+                (r['x'] <= cx <= r['x'] + r['w']) and (r['y'] <= cy <= r['y'] + r['h'])
+                for r in rects
+            )
+            if not in_union:
+                return False
+    return True
 
 
 def _is_connected_rect_group(rects):
@@ -501,13 +550,20 @@ def calculate_l_mix_offcuts(layout, sheet, min_width=120.0, min_height=120.0, mi
             if any(edge < min_height for edge in _edge_lengths(vertices)):
                 continue
 
+            union_area = sum(rect["w"] * rect["h"] for rect in rect_group)
+            polygon_area = _polygon_area(vertices)
+            if polygon_area > (union_area + 1e-6):
+                continue
+            if not _polygon_within_rect_union(vertices, rect_group):
+                continue
+
             xs = [v[0] for v in vertices]
             ys = [v[1] for v in vertices]
             min_x, max_x = min(xs), max(xs)
             min_y, max_y = min(ys), max(ys)
             width = max_x - min_x
             height = max_y - min_y
-            area = sum(rect["w"] * rect["h"] for rect in rect_group)
+            area = union_area
             if width < min_width or height < min_height or area < min_area:
                 continue
 

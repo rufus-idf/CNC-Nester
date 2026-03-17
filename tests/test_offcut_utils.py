@@ -167,6 +167,24 @@ class OffcutUtilsTests(unittest.TestCase):
         self.assertEqual(l_shapes[0]["width"], 100.0)
         self.assertEqual(l_shapes[0]["height"], 100.0)
 
+
+    def test_calculate_l_mix_offcuts_rejects_l_shape_if_vertices_leave_free_union(self):
+        free_rects = [
+            {"x": 0.0, "y": 0.0, "w": 100.0, "h": 40.0},
+            {"x": 0.0, "y": 40.0, "w": 40.0, "h": 60.0},
+        ]
+
+        with patch("offcut_utils._usable_sheet_and_parts", return_value=({}, [])):
+            with patch("offcut_utils._compute_free_rects", return_value=free_rects):
+                with patch(
+                    "offcut_utils._normalize_polygon_vertices",
+                    return_value=[[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0], [0.0, 40.0], [40.0, 40.0]],
+                ):
+                    result = calculate_l_mix_offcuts({}, {}, min_width=20.0, min_height=20.0, min_area=100.0)
+
+        self.assertFalse(any(r.get("shape_type") == "L" for r in result))
+
+
     def test_build_sheet_usage_heatmap_empty_sheet_cells_are_zero(self):
         layout = {
             "sheet_w": 200.0,

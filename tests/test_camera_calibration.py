@@ -34,6 +34,7 @@ class CameraCalibrationTests(unittest.TestCase):
 
     def test_detect_calibration_dots_finds_four_bottom_left_markers(self):
         image = self._build_test_image()
+        image[250:270, 150:190] = 30
 
         dots = detect_calibration_dots(image)
 
@@ -48,6 +49,8 @@ class CameraCalibrationTests(unittest.TestCase):
 
         self.assertAlmostEqual(calibration["board_width_mm"], 600.0, delta=20.0)
         self.assertAlmostEqual(calibration["board_height_mm"], 560.0, delta=20.0)
+        self.assertGreater(calibration["fov_width_mm"], calibration["board_width_mm"])
+        self.assertGreater(calibration["fov_height_mm"], calibration["board_height_mm"])
         self.assertEqual(len(calibration["board_corners_px"]), 4)
 
 

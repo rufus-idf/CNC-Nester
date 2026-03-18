@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 import io
+import itertools
 from typing import Any
 
 import numpy as np
@@ -42,11 +43,17 @@ def _connected_components(mask: np.ndarray, min_pixels: int = 1) -> list[dict[st
 
             xs = np.array([p[0] for p in pixels], dtype=float)
             ys = np.array([p[1] for p in pixels], dtype=float)
+            bbox_width = float(xs.max() - xs.min() + 1.0)
+            bbox_height = float(ys.max() - ys.min() + 1.0)
+            bbox_area = max(1.0, bbox_width * bbox_height)
             components.append({
                 "pixels": pixels,
                 "size": len(pixels),
                 "centroid": [float(xs.mean()), float(ys.mean())],
                 "bbox": [float(xs.min()), float(ys.min()), float(xs.max()), float(ys.max())],
+                "bbox_width": bbox_width,
+                "bbox_height": bbox_height,
+                "fill_ratio": float(len(pixels) / bbox_area),
             })
 
     components.sort(key=lambda item: item["size"], reverse=True)
@@ -65,21 +72,72 @@ def detect_calibration_dots(image_rgb: np.ndarray, region_ratio: float = 0.45) -
 
     min_pixels = max(8, int((height * width) * 0.00002))
     components = _connected_components(dark_mask, min_pixels=min_pixels)
-    if len(components) < 4:
+    candidate_components = [
+        component for component in components
+        if component["fill_ratio"] >= 0.25
+        and component["bbox_width"] <= (width * 0.12)
+        and component["bbox_height"] <= (height * 0.12)
+    ]
+    if len(candidate_components) < 4:
+        candidate_components = components[:12]
+    if len(candidate_components) < 4:
         raise ValueError("Could not detect the four calibration dots. Try a clearer photo or darker dots.")
 
-    selected = components[:4]
-    centroids = []
-    for component in selected:
+    candidate_centroids = []
+    for component in candidate_components[:12]:
         cx, cy = component["centroid"]
-        centroids.append([cx, cy + y_start])
+        candidate_centroids.append([float(cx), float(cy + y_start)])
 
-    centroids.sort(key=lambda point: (point[1], point[0]))
-    top = sorted(centroids[:2], key=lambda point: point[0])
-    bottom = sorted(centroids[2:], key=lambda point: point[0])
-    top_left, top_right = top
-    bottom_left, bottom_right = bottom
-    return [top_left, top_right, bottom_left, bottom_right]
+    best_score = None
+    best_points = None
+    for points in itertools.combinations(candidate_centroids, 4):
+        ordered = sorted(points, key=lambda point: (point[1], point[0]))
+        top = sorted(ordered[:2], key=lambda point: point[0])
+        bottom = sorted(ordered[2:], key=lambda point: point[0])
+        top_left, top_right = [np.array(point, dtype=float) for point in top]
+        bottom_left, bottom_right = [np.array(point, dtype=float) for point in bottom]
+
+        top_vec = top_right - top_left
+        bottom_vec = bottom_right - bottom_left
+        left_vec = bottom_left - top_left
+        right_vec = bottom_right - top_right
+
+        top_len = float(np.linalg.norm(top_vec))
+        bottom_len = float(np.linalg.norm(bottom_vec))
+        left_len = float(np.linalg.norm(left_vec))
+        right_len = float(np.linalg.norm(right_vec))
+        if min(top_len, bottom_len, left_len, right_len) <= 1e-6:
+            continue
+
+        avg_horizontal = (top_len + bottom_len) / 2.0
+        avg_vertical = (left_len + right_len) / 2.0
+        if avg_horizontal <= 1e-6 or avg_vertical <= 1e-6:
+            continue
+
+        orthogonality = abs(float(np.dot(top_vec / top_len, left_vec / left_len)))
+        diagonal_1 = float(np.linalg.norm(bottom_right - top_left))
+        diagonal_2 = float(np.linalg.norm(bottom_left - top_right))
+        square_ratio = abs(avg_horizontal - avg_vertical) / max(avg_horizontal, avg_vertical)
+        side_consistency = (
+            abs(top_len - bottom_len) / avg_horizontal
+            + abs(left_len - right_len) / avg_vertical
+        )
+        diagonal_consistency = abs(diagonal_1 - diagonal_2) / max(diagonal_1, diagonal_2, 1e-6)
+        score = (square_ratio * 4.0) + (side_consistency * 2.0) + (diagonal_consistency * 2.0) + orthogonality
+
+        if best_score is None or score < best_score:
+            best_score = score
+            best_points = [
+                top_left.tolist(),
+                top_right.tolist(),
+                bottom_left.tolist(),
+                bottom_right.tolist(),
+            ]
+
+    if best_points is None:
+        raise ValueError("Could not determine a valid 100 mm square from the detected dots.")
+
+    return [[round(point[0], 2), round(point[1], 2)] for point in best_points]
 
 
 def _unit_vector(vector: np.ndarray) -> np.ndarray:
@@ -136,11 +194,22 @@ def calibrate_board(image_rgb: np.ndarray, dot_spacing_mm: float = 100.0, backgr
         origin + (min_x * x_axis) + (max_y * y_axis),
     ]
 
+    image_corners = np.array([
+        [0.0, 0.0],
+        [float(image_rgb.shape[1] - 1), 0.0],
+        [float(image_rgb.shape[1] - 1), float(image_rgb.shape[0] - 1)],
+        [0.0, float(image_rgb.shape[0] - 1)],
+    ])
+    image_x_projection = (image_corners - origin) @ x_axis
+    image_y_projection = (image_corners - origin) @ y_axis
+
     return {
         "dots": [[round(point[0], 2), round(point[1], 2)] for point in dots],
         "board_corners_px": [[round(float(p[0]), 2), round(float(p[1]), 2)] for p in corners],
         "board_width_mm": round((max_x - min_x) * mm_per_px_x, 2),
         "board_height_mm": round(abs(max_y - min_y) * mm_per_px_y, 2),
+        "fov_width_mm": round((float(np.max(image_x_projection)) - float(np.min(image_x_projection))) * mm_per_px_x, 2),
+        "fov_height_mm": round(abs(float(np.max(image_y_projection)) - float(np.min(image_y_projection))) * mm_per_px_y, 2),
         "mm_per_px_x": round(mm_per_px_x, 6),
         "mm_per_px_y": round(mm_per_px_y, 6),
         "background_threshold": float(background_threshold),

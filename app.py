@@ -1404,6 +1404,9 @@ with camera_tab:
             metric_col2.metric("Board height (mm)", f"{calibration['board_height_mm']}")
             metric_col3.metric("mm / px X", f"{calibration['mm_per_px_x']}")
             metric_col4.metric("mm / px Y", f"{calibration['mm_per_px_y']}")
+            fov_col1, fov_col2 = st.columns(2)
+            fov_col1.metric("Visible area width (mm)", f"{calibration['fov_width_mm']}")
+            fov_col2.metric("Visible area height (mm)", f"{calibration['fov_height_mm']}")
 
             fig, ax = plt.subplots(figsize=(8, 5), dpi=140)
             ax.imshow(image_rgb)
@@ -1423,7 +1426,8 @@ with camera_tab:
             ax.legend(loc="upper right")
             st.pyplot(fig)
 
-            st.caption("Use an empty board image for calibration. If the detected green board outline is wrong, increase or decrease the contrast threshold and retry with a clearer image.")
+            st.caption("Use an empty board image for calibration. The board metrics come from the detected board region, while the visible-area metrics come from the full camera frame scaled by your 100 mm dot square.")
+            st.caption("If the dots are labeled incorrectly or the green board outline is wrong, retry with darker dots, stronger contrast around the board edge, or adjust the contrast threshold.")
             st.dataframe(
                 pd.DataFrame({
                     "Point": ["Top-left dot", "Top-right dot", "Bottom-left dot", "Bottom-right dot"],

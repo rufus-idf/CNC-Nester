@@ -2,6 +2,7 @@ import copy
 import hashlib
 import io
 import json
+import time
 import zipfile
 
 import ezdxf
@@ -1398,6 +1399,18 @@ with camera_tab:
         stream_width = live_col1.selectbox("Capture width", [640, 848, 1280], index=0, key="camera_live_width")
         stream_height = live_col2.selectbox("Capture height", [480, 720], index=0, key="camera_live_height")
         stream_fps = live_col3.selectbox("FPS", [15, 30], index=1, key="camera_live_fps")
+        live_preview_enabled = st.toggle("Show live preview", value=False, key="camera_live_preview_enabled")
+
+        if available and live_preview_enabled:
+            try:
+                st.session_state["camera_live_preview"] = capture_realsense_frame(
+                    width=int(stream_width),
+                    height=int(stream_height),
+                    fps=int(stream_fps),
+                    warmup_frames=3,
+                )
+            except Exception as exc:
+                st.error(f"Could not refresh the RealSense live preview: {exc}")
 
         if available and st.button("Capture RealSense frame", key="camera_capture_live"):
             try:
@@ -1408,6 +1421,23 @@ with camera_tab:
                 )
             except Exception as exc:
                 st.error(f"Could not capture a RealSense frame: {exc}")
+
+        preview_frame = st.session_state.get("camera_live_preview")
+        if preview_frame:
+            preview_col1, preview_col2 = st.columns(2)
+            with preview_col1:
+                st.image(preview_frame.get("color_rgb"), caption="Live RealSense RGB preview", width="stretch")
+            with preview_col2:
+                fig_depth, ax_depth = plt.subplots(figsize=(6, 4), dpi=140)
+                ax_depth.imshow(preview_frame.get("depth_mm"), cmap="viridis")
+                ax_depth.set_title("Live depth preview (mm)")
+                ax_depth.set_xticks([])
+                ax_depth.set_yticks([])
+                st.pyplot(fig_depth)
+
+            if st.button("Use current live frame for calibration", key="camera_use_live_preview"):
+                st.session_state["camera_live_capture"] = preview_frame
+                st.success("Current live frame copied into calibration snapshot.")
 
         capture = st.session_state.get("camera_live_capture")
         if capture:
@@ -1422,18 +1452,13 @@ with camera_tab:
             except Exception as exc:
                 st.warning(f"Could not estimate visible area from depth: {exc}")
 
-            preview_col1, preview_col2 = st.columns(2)
-            with preview_col1:
-                st.image(image_rgb, caption="Captured RealSense RGB frame", use_container_width=True)
-            with preview_col2:
-                fig_depth, ax_depth = plt.subplots(figsize=(6, 4), dpi=140)
-                ax_depth.imshow(capture["depth_mm"], cmap="viridis")
-                ax_depth.set_title("Depth preview (mm)")
-                ax_depth.set_xticks([])
-                ax_depth.set_yticks([])
-                st.pyplot(fig_depth)
+            st.image(image_rgb, caption="Calibration snapshot RGB frame", width="stretch")
         elif available:
-            st.info("Capture a RealSense frame to use live RGB + depth data inside the app.")
+            st.info("Enable live preview or capture a RealSense frame to use live RGB + depth data inside the app.")
+
+        if available and live_preview_enabled:
+            time.sleep(0.35)
+            st.rerun()
     else:
         calibration_image = st.file_uploader("Upload calibration JPEG", type=["jpg", "jpeg"], key="camera_calibration_upload")
         if calibration_image is None:

@@ -1,6 +1,6 @@
 import unittest
 
-from nesting_engine import run_selco_nesting, run_smart_nesting
+from nesting_engine import run_offcut_nesting, run_selco_nesting, run_smart_nesting
 
 
 class NestingEngineTests(unittest.TestCase):
@@ -30,6 +30,23 @@ class NestingEngineTests(unittest.TestCase):
 
         self.assertIsNotNone(packer)
         self.assertEqual(len(packer.rect_list()), 4)
+
+    def test_offcut_mode_uses_selected_offcuts_as_available_bins(self):
+        panels = [
+            {"Label": "Panel A", "Width": 380, "Length": 500, "Qty": 1, "Grain?": False, "Material": "MDF"},
+            {"Label": "Panel B", "Width": 380, "Length": 500, "Qty": 1, "Grain?": False, "Material": "MDF"},
+        ]
+        offcuts = [
+            {"offcut_id": "OC-1", "bbox_w_mm": 400, "bbox_h_mm": 600},
+            {"offcut_id": "OC-2", "bbox_w_mm": 400, "bbox_h_mm": 600},
+        ]
+
+        packer = run_offcut_nesting(panels, offcuts, margin=10, kerf=0)
+
+        self.assertIsNotNone(packer)
+        self.assertEqual(len(packer.rect_list()), 2)
+        self.assertEqual(len(packer), 2)
+        self.assertEqual(sorted(getattr(bin_obj, "bid", "") for bin_obj in packer), ["OC-1", "OC-2"])
 
 if __name__ == "__main__":
     unittest.main()

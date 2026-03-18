@@ -1,6 +1,13 @@
 from copy import deepcopy
 
 
+def _sheet_dims(layout, sheet):
+    return (
+        float(sheet.get("sheet_w", layout.get("sheet_w", 0.0))),
+        float(sheet.get("sheet_h", layout.get("sheet_h", 0.0))),
+    )
+
+
 def _too_close(a, b, clearance):
     return not (
         a["x"] + a["w"] + clearance <= b["x"]
@@ -85,6 +92,7 @@ def build_indexed_part_labels(layout, sheet_index):
 def move_part(layout, sheet_index, part_id, dx, dy):
     new_layout = deepcopy(layout)
     sheet = new_layout["sheets"][sheet_index]
+    sheet_w, sheet_h = _sheet_dims(new_layout, sheet)
     for p in sheet["parts"]:
         if p["id"] == part_id:
             candidate = {"x": p["x"] + dx, "y": p["y"] + dy, "w": p["w"], "h": p["h"]}
@@ -92,8 +100,8 @@ def move_part(layout, sheet_index, part_id, dx, dy):
                 candidate,
                 sheet["parts"],
                 part_id,
-                new_layout["sheet_w"],
-                new_layout["sheet_h"],
+                sheet_w,
+                sheet_h,
                 new_layout["margin"],
                 new_layout["kerf"],
             )
@@ -108,6 +116,7 @@ def move_part(layout, sheet_index, part_id, dx, dy):
 def rotate_part_90(layout, sheet_index, part_id):
     new_layout = deepcopy(layout)
     sheet = new_layout["sheets"][sheet_index]
+    sheet_w, sheet_h = _sheet_dims(new_layout, sheet)
     for p in sheet["parts"]:
         if p["id"] == part_id:
             candidate = {"x": p["x"], "y": p["y"], "w": p["h"], "h": p["w"]}
@@ -115,8 +124,8 @@ def rotate_part_90(layout, sheet_index, part_id):
                 candidate,
                 sheet["parts"],
                 part_id,
-                new_layout["sheet_w"],
-                new_layout["sheet_h"],
+                sheet_w,
+                sheet_h,
                 new_layout["margin"],
                 new_layout["kerf"],
             )

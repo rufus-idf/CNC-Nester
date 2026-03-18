@@ -96,6 +96,24 @@ class OffcutUtilsTests(unittest.TestCase):
         self.assertAlmostEqual(result["utilization_pct"], 10.63)
         self.assertGreaterEqual(len(result["reusable_offcuts"]), 1)
 
+    def test_calculate_sheet_offcuts_prefers_sheet_specific_dimensions(self):
+        layout = {
+            "sheet_w": 1000.0,
+            "sheet_h": 1000.0,
+            "margin": 10.0,
+        }
+        sheet = {
+            "sheet_w": 300.0,
+            "sheet_h": 200.0,
+            "parts": [],
+        }
+
+        result = calculate_sheet_offcuts(layout, sheet, min_width=0.0, min_height=0.0, min_area=0.0)
+
+        self.assertEqual(len(result["reusable_offcuts"]), 1)
+        self.assertEqual(result["reusable_offcuts"][0]["width"], 280.0)
+        self.assertEqual(result["reusable_offcuts"][0]["height"], 180.0)
+
     def test_calculate_sheet_offcuts_filters_small_scraps(self):
         layout = {
             "sheet_w": 500.0,

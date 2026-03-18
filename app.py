@@ -19,6 +19,8 @@ from nesting_engine import run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 from offcut_utils import calculate_sheet_offcuts, calculate_l_mix_offcuts, build_sheet_offcut_preview
 from offcut_stock import build_offcut_stock_rows, normalize_spreadsheet_reference, parse_vertices_json
+from camera_calibration import calibrate_board, load_image_array
+from camera_realsense import capture_realsense_frame, estimate_plane_depth_mm, estimate_visible_area_mm, realsense_status
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -846,7 +848,13 @@ SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
 KERF = st.sidebar.number_input("Kerf", key="kerf")
 MARGIN = st.sidebar.number_input("Margin", key="margin")
 
-input_tab, result_tab, heat_tab, stock_tab = st.tabs(["1️⃣ Input", "2️⃣ Nested Results", "3️⃣ Heat Map & Offcuts", "4️⃣ Offcut Stock"])
+input_tab, result_tab, heat_tab, stock_tab, camera_tab = st.tabs([
+    "1️⃣ Input",
+    "2️⃣ Nested Results",
+    "3️⃣ Heat Map & Offcuts",
+    "4️⃣ Offcut Stock",
+    "5️⃣ Camera Calibration",
+])
 
 with input_tab:
     st.markdown("### Load Nest")
@@ -1372,6 +1380,118 @@ with stock_tab:
                             spine.set_visible(False)
                         st.pyplot(fig)
                         st.caption("Edge labels show side length in mm. Offcut is normalized to local origin for preview.")
+
+
+with camera_tab:
+    st.subheader("Camera Calibration")
+    st.caption("Use either a JPEG upload or a direct Intel RealSense capture. The app expects four dark dots near the bottom-left of the board in a 100 mm x 100 mm square.")
+    calibration_source = st.radio("Calibration source", ["RealSense Live", "JPEG Upload"], horizontal=True, key="camera_calibration_source")
+    dot_spacing_mm = st.number_input("Calibration dot spacing (mm)", min_value=10.0, value=100.0, step=5.0, key="camera_dot_spacing_mm")
+    background_threshold = st.slider("Board/background contrast threshold", min_value=5, max_value=120, value=30, step=1, key="camera_background_threshold")
+    image_rgb = None
+    live_metrics = {}
+
+    if calibration_source == "RealSense Live":
+        available, status_message = realsense_status()
+        st.caption(status_message)
+        live_col1, live_col2, live_col3 = st.columns(3)
+        stream_width = live_col1.selectbox("Capture width", [640, 848, 1280], index=0, key="camera_live_width")
+        stream_height = live_col2.selectbox("Capture height", [480, 720], index=0, key="camera_live_height")
+        stream_fps = live_col3.selectbox("FPS", [15, 30], index=1, key="camera_live_fps")
+
+        if available and st.button("Capture RealSense frame", key="camera_capture_live"):
+            try:
+                st.session_state["camera_live_capture"] = capture_realsense_frame(
+                    width=int(stream_width),
+                    height=int(stream_height),
+                    fps=int(stream_fps),
+                )
+            except Exception as exc:
+                st.error(f"Could not capture a RealSense frame: {exc}")
+
+        capture = st.session_state.get("camera_live_capture")
+        if capture:
+            image_rgb = capture.get("color_rgb")
+            try:
+                plane_depth_mm = estimate_plane_depth_mm(capture["depth_mm"])
+                visible_area = estimate_visible_area_mm(capture["intrinsics"], plane_depth_mm)
+                live_metrics = {
+                    "plane_depth_mm": round(plane_depth_mm, 2),
+                    **visible_area,
+                }
+            except Exception as exc:
+                st.warning(f"Could not estimate visible area from depth: {exc}")
+
+            preview_col1, preview_col2 = st.columns(2)
+            with preview_col1:
+                st.image(image_rgb, caption="Captured RealSense RGB frame", use_container_width=True)
+            with preview_col2:
+                fig_depth, ax_depth = plt.subplots(figsize=(6, 4), dpi=140)
+                ax_depth.imshow(capture["depth_mm"], cmap="viridis")
+                ax_depth.set_title("Depth preview (mm)")
+                ax_depth.set_xticks([])
+                ax_depth.set_yticks([])
+                st.pyplot(fig_depth)
+        elif available:
+            st.info("Capture a RealSense frame to use live RGB + depth data inside the app.")
+    else:
+        calibration_image = st.file_uploader("Upload calibration JPEG", type=["jpg", "jpeg"], key="camera_calibration_upload")
+        if calibration_image is None:
+            st.info("Upload an empty-board JPEG to calculate board dimensions and verify the dot square calibration.")
+        else:
+            image_rgb = load_image_array(calibration_image.getvalue())
+
+    if image_rgb is not None:
+        try:
+            calibration = calibrate_board(
+                image_rgb,
+                dot_spacing_mm=dot_spacing_mm,
+                background_threshold=float(background_threshold),
+            )
+
+            metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
+            metric_col1.metric("Board width (mm)", f"{calibration['board_width_mm']}")
+            metric_col2.metric("Board height (mm)", f"{calibration['board_height_mm']}")
+            metric_col3.metric("mm / px X", f"{calibration['mm_per_px_x']}")
+            metric_col4.metric("mm / px Y", f"{calibration['mm_per_px_y']}")
+            fov_col1, fov_col2 = st.columns(2)
+            fov_col1.metric("Visible area width (mm)", f"{live_metrics.get('visible_width_mm', calibration['fov_width_mm'])}")
+            fov_col2.metric("Visible area height (mm)", f"{live_metrics.get('visible_height_mm', calibration['fov_height_mm'])}")
+            if live_metrics:
+                depth_col, _ = st.columns(2)
+                depth_col.metric("Plane depth (mm)", f"{live_metrics['plane_depth_mm']}")
+
+            fig, ax = plt.subplots(figsize=(8, 5), dpi=140)
+            ax.imshow(image_rgb)
+            board_corners = calibration["board_corners_px"]
+            board_x = [p[0] for p in board_corners] + [board_corners[0][0]]
+            board_y = [p[1] for p in board_corners] + [board_corners[0][1]]
+            ax.plot(board_x, board_y, color="#00a651", linewidth=2.0, label="Detected board")
+
+            dot_points = calibration["dots"]
+            ax.scatter([p[0] for p in dot_points], [p[1] for p in dot_points], color="#ff4b4b", s=40, label="Calibration dots")
+            for idx, point in enumerate(dot_points, start=1):
+                ax.text(point[0] + 8, point[1] - 8, f"D{idx}", color="#ff4b4b", fontsize=9, weight="bold")
+
+            ax.set_title("Camera calibration preview")
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.legend(loc="upper right")
+            st.pyplot(fig)
+
+            st.caption("Use an empty board image or a live empty-board capture for calibration. Visible-area metrics come from either the RealSense depth/intrinsics or the RGB dot-square estimate.")
+            st.caption("If the dots are labeled incorrectly or the green board outline is wrong, retry with darker dots, stronger contrast around the board edge, or adjust the contrast threshold.")
+            st.dataframe(
+                pd.DataFrame({
+                    "Point": ["Top-left dot", "Top-right dot", "Bottom-left dot", "Bottom-right dot"],
+                    "Pixel X": [p[0] for p in dot_points],
+                    "Pixel Y": [p[1] for p in dot_points],
+                }),
+                hide_index=True,
+                width="stretch",
+            )
+        except Exception as exc:
+            st.error(f"Could not calibrate this image: {exc}")
 
 if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()

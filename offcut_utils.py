@@ -347,6 +347,29 @@ def _polygon_area(vertices):
     return abs(area) / 2.0
 
 
+def _classify_orthogonal_polygon(vertices):
+    vertex_count = len(vertices)
+    if vertex_count < 4 or (vertex_count % 2) != 0:
+        return {
+            "vertex_count": vertex_count,
+            "rectangle_count": 0,
+            "l_shape_count": 0,
+            "l_rect_count": 0,
+            "c_shape_count": 0,
+            "c_rect_count": 0,
+        }
+
+    rectangle_count = max(0, (vertex_count // 2) - 1)
+    return {
+        "vertex_count": vertex_count,
+        "rectangle_count": rectangle_count,
+        "l_shape_count": rectangle_count // 2,
+        "l_rect_count": rectangle_count % 2,
+        "c_shape_count": rectangle_count // 3,
+        "c_rect_count": rectangle_count % 3,
+    }
+
+
 def _normalize_polygon_vertices(vertices, min_edge):
     if len(vertices) < 3:
         return vertices
@@ -525,90 +548,103 @@ def calculate_l_mix_offcuts(layout, sheet, min_width=120.0, min_height=120.0, mi
     usable, parts = _usable_sheet_and_parts(layout, sheet)
     free_rects = _compute_free_rects(usable, parts)
 
-    l_candidates = []
-    seen_signatures = set()
-    free_rect_count = len(free_rects)
-
-    max_combo_size = min(5, free_rect_count)
-    for combo_size in range(2, max_combo_size + 1):
-        if free_rect_count < combo_size:
-            continue
-
-        combos = itertools.combinations(range(free_rect_count), combo_size)
-
-        for indices in combos:
-            rect_group = [free_rects[idx] for idx in indices]
-            if not _is_connected_rect_group(rect_group):
-                continue
-
-            raw_vertices = _polygon_from_rects(rect_group)
-            if len(raw_vertices) < 6:
-                continue
-            vertices = _normalize_polygon_vertices(raw_vertices, min_height)
-            if not _is_l_shape(vertices):
-                continue
-            if any(edge < min_height for edge in _edge_lengths(vertices)):
-                continue
-
-            union_area = sum(rect["w"] * rect["h"] for rect in rect_group)
-            polygon_area = _polygon_area(vertices)
-            if polygon_area > (union_area + 1e-6):
-                continue
-            if not _polygon_within_rect_union(vertices, rect_group):
-                continue
-
-            xs = [v[0] for v in vertices]
-            ys = [v[1] for v in vertices]
-            min_x, max_x = min(xs), max(xs)
-            min_y, max_y = min(ys), max(ys)
-            width = max_x - min_x
-            height = max_y - min_y
-            area = union_area
-            if width < min_width or height < min_height or area < min_area:
-                continue
-
-            signature = tuple(tuple(v) for v in vertices)
-            if signature in seen_signatures:
-                continue
-            seen_signatures.add(signature)
-
-            l_candidates.append((area, set(indices), {
-                "shape_type": "L",
-                "x": round(min_x, 2),
-                "y": round(min_y, 2),
-                "width": round(width, 2),
-                "height": round(height, 2),
-                "area": round(area, 2),
-                "vertices": vertices,
-            }))
-
-    l_candidates.sort(key=lambda item: item[0], reverse=True)
-    used = set()
     l_shapes = []
-    for _, candidate_indices, candidate in l_candidates:
-        if used.intersection(candidate_indices):
-            continue
-        used.update(candidate_indices)
-        l_shapes.append(candidate)
-
-    remaining_rects = [r for idx, r in enumerate(free_rects) if idx not in used]
-
     rectangles = []
-    for component_indices in _connected_rect_components(remaining_rects):
-        component_rects = [remaining_rects[idx] for idx in component_indices]
-        largest = _largest_rect_in_union(component_rects)
-        if not largest:
+    for component_indices in _connected_rect_components(free_rects):
+        component_rects = [free_rects[idx] for idx in component_indices]
+        component_polygon = _normalize_polygon_vertices(_polygon_from_rects(component_rects), min_height)
+        component_classification = _classify_orthogonal_polygon(component_polygon)
+
+        l_candidates = []
+        seen_signatures = set()
+        max_combo_size = min(5, len(component_rects))
+        for combo_size in range(2, max_combo_size + 1):
+            for local_indices in itertools.combinations(range(len(component_rects)), combo_size):
+                rect_group = [component_rects[idx] for idx in local_indices]
+                if not _is_connected_rect_group(rect_group):
+                    continue
+
+                raw_vertices = _polygon_from_rects(rect_group)
+                if len(raw_vertices) < 6:
+                    continue
+                vertices = _normalize_polygon_vertices(raw_vertices, min_height)
+                if not _is_l_shape(vertices):
+                    continue
+                if any(edge < min_height for edge in _edge_lengths(vertices)):
+                    continue
+
+                union_area = sum(rect["w"] * rect["h"] for rect in rect_group)
+                polygon_area = _polygon_area(vertices)
+                if polygon_area > (union_area + 1e-6):
+                    continue
+                if not _polygon_within_rect_union(vertices, rect_group):
+                    continue
+
+                xs = [v[0] for v in vertices]
+                ys = [v[1] for v in vertices]
+                min_x, max_x = min(xs), max(xs)
+                min_y, max_y = min(ys), max(ys)
+                width = max_x - min_x
+                height = max_y - min_y
+                area = union_area
+                if width < min_width or height < min_height or area < min_area:
+                    continue
+
+                signature = tuple(tuple(v) for v in vertices)
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+
+                l_candidates.append((area, set(local_indices), {
+                    "shape_type": "L",
+                    "x": round(min_x, 2),
+                    "y": round(min_y, 2),
+                    "width": round(width, 2),
+                    "height": round(height, 2),
+                    "area": round(area, 2),
+                    "vertices": vertices,
+                    "source_vertex_count": component_classification["vertex_count"],
+                }))
+
+        l_candidates.sort(key=lambda item: item[0], reverse=True)
+        used = set()
+        selected_l_count = 0
+        for _, candidate_indices, candidate in l_candidates:
+            if selected_l_count >= component_classification["l_shape_count"]:
+                break
+            if used.intersection(candidate_indices):
+                continue
+            used.update(candidate_indices)
+            selected_l_count += 1
+            l_shapes.append(candidate)
+
+        remaining_rects = [r for idx, r in enumerate(component_rects) if idx not in used]
+        if not remaining_rects:
             continue
-        area = largest["w"] * largest["h"]
-        if largest["w"] >= min_width and largest["h"] >= min_height and area >= min_area:
-            rectangles.append({
-                "shape_type": "RECT",
-                "x": round(largest["x"], 2),
-                "y": round(largest["y"], 2),
-                "width": round(largest["w"], 2),
-                "height": round(largest["h"], 2),
-                "area": round(area, 2),
-            })
+
+        for remaining_component_indices in _connected_rect_components(remaining_rects):
+            remaining_component_rects = [remaining_rects[idx] for idx in remaining_component_indices]
+            remaining_polygon = _normalize_polygon_vertices(_polygon_from_rects(remaining_component_rects), min_height)
+            remaining_classification = _classify_orthogonal_polygon(remaining_polygon)
+            largest = _largest_rect_in_union(remaining_component_rects)
+            if not largest:
+                continue
+            area = largest["w"] * largest["h"]
+            if (
+                remaining_classification["rectangle_count"] > 0
+                and largest["w"] >= min_width
+                and largest["h"] >= min_height
+                and area >= min_area
+            ):
+                rectangles.append({
+                    "shape_type": "RECT",
+                    "x": round(largest["x"], 2),
+                    "y": round(largest["y"], 2),
+                    "width": round(largest["w"], 2),
+                    "height": round(largest["h"], 2),
+                    "area": round(area, 2),
+                    "source_vertex_count": remaining_classification["vertex_count"],
+                })
 
     result = l_shapes + rectangles
     result.sort(key=lambda r: r["area"], reverse=True)

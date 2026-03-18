@@ -1,10 +1,66 @@
 import unittest
 from unittest.mock import patch
 
-from offcut_utils import calculate_sheet_offcuts, calculate_l_mix_offcuts, build_sheet_usage_heatmap, build_sheet_offcut_preview
+from offcut_utils import (
+    _classify_orthogonal_polygon,
+    build_sheet_offcut_preview,
+    build_sheet_usage_heatmap,
+    calculate_l_mix_offcuts,
+    calculate_sheet_offcuts,
+)
 
 
 class OffcutUtilsTests(unittest.TestCase):
+    def test_classify_orthogonal_polygon_counts_follow_vertex_rules(self):
+        self.assertEqual(
+            _classify_orthogonal_polygon([[0, 0], [10, 0], [10, 10], [0, 10]]),
+            {
+                "vertex_count": 4,
+                "rectangle_count": 1,
+                "l_shape_count": 0,
+                "l_rect_count": 1,
+                "c_shape_count": 0,
+                "c_rect_count": 1,
+            },
+        )
+        self.assertEqual(
+            _classify_orthogonal_polygon([[0, 0], [10, 0], [10, 5], [5, 5], [5, 10], [0, 10]]),
+            {
+                "vertex_count": 6,
+                "rectangle_count": 2,
+                "l_shape_count": 1,
+                "l_rect_count": 0,
+                "c_shape_count": 0,
+                "c_rect_count": 2,
+            },
+        )
+        self.assertEqual(
+            _classify_orthogonal_polygon(
+                [[0, 0], [12, 0], [12, 2], [10, 2], [10, 10], [2, 10], [2, 12], [0, 12]]
+            ),
+            {
+                "vertex_count": 8,
+                "rectangle_count": 3,
+                "l_shape_count": 1,
+                "l_rect_count": 1,
+                "c_shape_count": 1,
+                "c_rect_count": 0,
+            },
+        )
+        self.assertEqual(
+            _classify_orthogonal_polygon(
+                [[0, 0], [14, 0], [14, 2], [12, 2], [12, 10], [4, 10], [4, 12], [2, 12], [2, 14], [0, 14]]
+            ),
+            {
+                "vertex_count": 10,
+                "rectangle_count": 4,
+                "l_shape_count": 2,
+                "l_rect_count": 0,
+                "c_shape_count": 1,
+                "c_rect_count": 1,
+            },
+        )
+
     def test_calculate_sheet_offcuts_empty_sheet(self):
         layout = {
             "sheet_w": 1000.0,
@@ -183,6 +239,23 @@ class OffcutUtilsTests(unittest.TestCase):
                     result = calculate_l_mix_offcuts({}, {}, min_width=20.0, min_height=20.0, min_area=100.0)
 
         self.assertFalse(any(r.get("shape_type") == "L" for r in result))
+
+    def test_calculate_l_mix_offcuts_classifies_components_independently(self):
+        free_rects = [
+            {"x": 0.0, "y": 0.0, "w": 100.0, "h": 40.0},
+            {"x": 0.0, "y": 40.0, "w": 40.0, "h": 60.0},
+            {"x": 200.0, "y": 0.0, "w": 100.0, "h": 40.0},
+            {"x": 260.0, "y": 40.0, "w": 40.0, "h": 60.0},
+        ]
+
+        with patch("offcut_utils._usable_sheet_and_parts", return_value=({}, [])):
+            with patch("offcut_utils._compute_free_rects", return_value=free_rects):
+                result = calculate_l_mix_offcuts({}, {}, min_width=20.0, min_height=20.0, min_area=100.0)
+
+        l_shapes = [r for r in result if r.get("shape_type") == "L"]
+
+        self.assertEqual(len(l_shapes), 2)
+        self.assertTrue(all(shape.get("source_vertex_count") == 6 for shape in l_shapes))
 
 
     def test_build_sheet_usage_heatmap_empty_sheet_cells_are_zero(self):

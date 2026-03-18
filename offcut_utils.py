@@ -86,8 +86,8 @@ def _overlap_area(a, b):
 
 def _usable_sheet_and_parts(layout, sheet):
     margin = _safe_float(layout.get("margin"), 0.0)
-    sheet_w = _safe_float(layout.get("sheet_w"), 0.0)
-    sheet_h = _safe_float(layout.get("sheet_h"), 0.0)
+    sheet_w = _safe_float(sheet.get("sheet_w"), _safe_float(layout.get("sheet_w"), 0.0))
+    sheet_h = _safe_float(sheet.get("sheet_h"), _safe_float(layout.get("sheet_h"), 0.0))
 
     usable = {
         "x": margin,

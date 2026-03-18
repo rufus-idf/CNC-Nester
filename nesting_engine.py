@@ -76,6 +76,69 @@ def solve_packer(
     return best_algo_packer
 
 
+def solve_packer_with_bins(
+    panels,
+    bins,
+    margin,
+    kerf,
+    pack_algos,
+    *,
+    rotate_flexible_panels=False,
+    auto_rotate_all=False,
+):
+    """Run one packing strategy against a fixed list of variable-sized bins."""
+    best_algo_packer = None
+    best_algo_items = -1
+    best_algo_sheets = float("inf")
+
+    for algo in pack_algos:
+        packer = newPacker(
+            mode=PackingMode.Offline,
+            pack_algo=algo,
+            rotation=auto_rotate_all,
+        )
+
+        for p in panels:
+            for _ in range(p["Qty"]):
+                p_w = p["Width"]
+                p_l = p["Length"]
+                grain = p["Grain?"]
+                rid_label = f"{p['Label']}{'(G)' if grain else ''}"
+
+                real_w = p_w + kerf
+                real_l = p_l + kerf
+
+                if grain:
+                    packer.add_rect(real_w, real_l, rid=rid_label)
+                else:
+                    if rotate_flexible_panels:
+                        packer.add_rect(real_l, real_w, rid=rid_label)
+                    else:
+                        packer.add_rect(real_w, real_l, rid=rid_label)
+
+        for bin_meta in bins:
+            usable_w = float(bin_meta["width"]) - (margin * 2)
+            usable_h = float(bin_meta["height"]) - (margin * 2)
+            if usable_w <= 0 or usable_h <= 0:
+                continue
+            packer.add_bin(usable_w, usable_h, bid=bin_meta.get("bid"))
+
+        packer.pack()
+
+        items_packed = len(packer.rect_list())
+        sheets_used = len(packer)
+
+        if items_packed > best_algo_items:
+            best_algo_packer = packer
+            best_algo_items = items_packed
+            best_algo_sheets = sheets_used
+        elif items_packed == best_algo_items and sheets_used < best_algo_sheets:
+            best_algo_packer = packer
+            best_algo_sheets = sheets_used
+
+    return best_algo_packer
+
+
 def run_smart_nesting(panels, sheet_w, sheet_h, margin, kerf):
     """
     Compare multiple strategies and return best result.
@@ -164,3 +227,79 @@ def run_selco_nesting(panels, sheet_w, sheet_h, margin, kerf):
             best_algo_sheets = sheets_used
 
     return best_algo_packer
+
+
+def run_offcut_nesting(panels, offcuts, margin, kerf, machine_type="Flat Bed"):
+    """
+    Nest panels onto a fixed list of selected offcuts.
+
+    Each offcut contributes exactly one available bin sized from its bounding box.
+    """
+    bins = []
+    for idx, offcut in enumerate(offcuts or [], start=1):
+        width = float(offcut.get("bbox_w_mm", 0.0) or 0.0)
+        height = float(offcut.get("bbox_h_mm", 0.0) or 0.0)
+        if width <= 0 or height <= 0:
+            continue
+        bins.append(
+            {
+                "width": width,
+                "height": height,
+                "bid": str(offcut.get("offcut_id") or f"offcut-{idx}"),
+            }
+        )
+
+    if not bins:
+        return None
+
+    if machine_type == "Selco":
+        return solve_packer_with_bins(
+            panels,
+            bins,
+            margin,
+            kerf,
+            [GuillotineBafLas, GuillotineBssfLas, GuillotineBlsfLas],
+        )
+
+    candidates = []
+    packer_a = solve_packer_with_bins(
+        panels,
+        bins,
+        margin,
+        kerf,
+        [MaxRectsBl, MaxRectsBssf, MaxRectsBaf],
+        rotate_flexible_panels=False,
+        auto_rotate_all=False,
+    )
+    if packer_a:
+        candidates.append(packer_a)
+
+    packer_b = solve_packer_with_bins(
+        panels,
+        bins,
+        margin,
+        kerf,
+        [MaxRectsBl, MaxRectsBssf, MaxRectsBaf],
+        rotate_flexible_panels=True,
+        auto_rotate_all=False,
+    )
+    if packer_b:
+        candidates.append(packer_b)
+
+    if all(not p.get("Grain?", False) for p in panels):
+        packer_c = solve_packer_with_bins(
+            panels,
+            bins,
+            margin,
+            kerf,
+            [MaxRectsBl, MaxRectsBssf, MaxRectsBaf],
+            rotate_flexible_panels=False,
+            auto_rotate_all=True,
+        )
+        if packer_c:
+            candidates.append(packer_c)
+
+    if not candidates:
+        return None
+
+    return min(candidates, key=lambda p: (-len(p.rect_list()), len(p)))

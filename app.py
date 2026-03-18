@@ -2,7 +2,6 @@ import copy
 import hashlib
 import io
 import json
-import time
 import zipfile
 
 import ezdxf
@@ -16,12 +15,10 @@ from manual_layout import build_indexed_part_labels, initialize_layout_from_pack
 from manual_tuning_engine import compute_position_grid, compute_visual_guide_grid, legal_bounds, move_part_to
 from manual_tuning_component import manual_tuning_canvas
 from nest_storage import build_nest_payload, build_sheet_boring_points, create_cix_zip, nest_file_to_payload, parse_nest_payload, payload_to_dxf
-from nesting_engine import run_selco_nesting, run_smart_nesting
+from nesting_engine import run_offcut_nesting, run_selco_nesting, run_smart_nesting
 from panel_utils import normalize_panels
 from offcut_utils import calculate_sheet_offcuts, calculate_l_mix_offcuts, build_sheet_offcut_preview
 from offcut_stock import build_offcut_stock_rows, normalize_spreadsheet_reference, parse_vertices_json
-from camera_calibration import calibrate_board, load_image_array
-from camera_realsense import capture_realsense_frame, estimate_plane_depth_mm, estimate_visible_area_mm, realsense_status
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="CNC Nester Pro", layout="wide")
@@ -29,8 +26,8 @@ st.set_page_config(page_title="CNC Nester Pro", layout="wide")
 OFFCUT_STOCK_SHEET_URL = "https://docs.google.com/spreadsheets/d/1-qS6gWekGtEhjczboAyAShJHHamK0ZuVlR7CFbubxxo/edit?gid=0#gid=0"
 OFFCUT_STOCK_LOCATION = "I Design Workshop"
 OFFCUT_THICKNESS_BY_PRESET = {
-    "MDF (2800 x 2070)": 18,
-    "Ply (3050 x 1220)": 19,
+    "MDF": 18,
+    "Ply": 19,
 }
 
 # --- SESSION STATE ---
@@ -96,11 +93,17 @@ if 'show_grain_overlay' not in st.session_state:
     st.session_state.show_grain_overlay = False
 if 'offcut_strategy' not in st.session_state:
     st.session_state.offcut_strategy = "Rectangles"
+if 'offcut_selected_ids' not in st.session_state:
+    st.session_state.offcut_selected_ids = []
+if 'offcut_selected_items' not in st.session_state:
+    st.session_state.offcut_selected_items = []
+if 'offcut_selector_open' not in st.session_state:
+    st.session_state.offcut_selector_open = False
 
 
 SHEET_PRESETS = {
-    "MDF (2800 x 2070)": (2800.0, 2070.0),
-    "Ply (3050 x 1220)": (3050.0, 1220.0),
+    "MDF": (2800.0, 2070.0),
+    "Ply": (3050.0, 1220.0),
 }
 
 def apply_pending_loaded_nest():
@@ -270,6 +273,83 @@ def infer_offcut_thickness(sheet_preset):
     return OFFCUT_THICKNESS_BY_PRESET.get(sheet_preset, "")
 
 
+def get_sheet_dimensions(layout, sheet):
+    return (
+        float(sheet.get("sheet_w", layout.get("sheet_w", 0.0))),
+        float(sheet.get("sheet_h", layout.get("sheet_h", 0.0))),
+    )
+
+
+def layout_uses_variable_sheets(layout):
+    if not layout or not layout.get("sheets"):
+        return False
+    base_w = float(layout.get("sheet_w", 0.0))
+    base_h = float(layout.get("sheet_h", 0.0))
+    for sheet in layout.get("sheets", []):
+        sheet_w, sheet_h = get_sheet_dimensions(layout, sheet)
+        if abs(sheet_w - base_w) > 1e-6 or abs(sheet_h - base_h) > 1e-6:
+            return True
+    return False
+
+
+def build_offcut_layout_from_packer(packer, margin, kerf, offcuts):
+    offcut_map = {str(item.get("offcut_id")): item for item in offcuts or []}
+    sheets = []
+
+    max_sheet_w = 0.0
+    max_sheet_h = 0.0
+
+    for sheet_index, packed_bin in enumerate(packer):
+        bid = str(getattr(packed_bin, "bid", "") or "")
+        offcut = offcut_map.get(bid, {})
+        sheet_w = float(offcut.get("bbox_w_mm", getattr(packed_bin, "width", 0.0) + (margin * 2)))
+        sheet_h = float(offcut.get("bbox_h_mm", getattr(packed_bin, "height", 0.0) + (margin * 2)))
+        max_sheet_w = max(max_sheet_w, sheet_w)
+        max_sheet_h = max(max_sheet_h, sheet_h)
+
+        parts = []
+        for part_index, rect in enumerate(packed_bin, start=1):
+            parts.append(
+                {
+                    "id": f"S{sheet_index+1}-P{part_index}",
+                    "rid": str(rect.rid) if rect.rid else f"Part {part_index}",
+                    "x": float(rect.x + margin),
+                    "y": float(rect.y + margin),
+                    "w": float(rect.width - kerf),
+                    "h": float(rect.height - kerf),
+                    "rotated": False,
+                }
+            )
+
+        sheets.append(
+            {
+                "sheet_index": sheet_index,
+                "sheet_w": sheet_w,
+                "sheet_h": sheet_h,
+                "offcut_id": bid,
+                "shape_type": str(offcut.get("shape_type", "")),
+                "material": str(offcut.get("material", "")),
+                "parts": parts,
+            }
+        )
+
+    return {
+        "sheet_w": max_sheet_w,
+        "sheet_h": max_sheet_h,
+        "margin": float(margin),
+        "kerf": float(kerf),
+        "sheets": sheets,
+    }
+
+
+def set_sheet_preset_state():
+    preset = st.session_state.get("sheet_preset", "Custom")
+    if preset == "Offcut":
+        st.session_state.offcut_selector_open = True
+    elif preset in SHEET_PRESETS:
+        st.session_state.offcut_selector_open = False
+
+
 def sync_sheet_dims_from_preset():
     preset = st.session_state.get("sheet_preset", "Custom")
     if st.session_state.get("last_sheet_preset_applied") == preset:
@@ -293,13 +373,16 @@ def rotate_layout_90(layout):
     rotated_layout["sheet_h"] = old_sheet_w
 
     for sheet in rotated_layout.get("sheets", []):
+        sheet_w, sheet_h = get_sheet_dimensions(layout, sheet)
+        sheet["sheet_w"] = sheet_h
+        sheet["sheet_h"] = sheet_w
         for part in sheet.get("parts", []):
             old_x = float(part["x"])
             old_y = float(part["y"])
             old_w = float(part["w"])
             old_h = float(part["h"])
 
-            part["x"] = old_sheet_h - (old_y + old_h)
+            part["x"] = sheet_h - (old_y + old_h)
             part["y"] = old_x
             part["w"] = old_h
             part["h"] = old_w
@@ -374,13 +457,14 @@ def _annotate_polygon_edge_lengths(ax, points):
 def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_preview=None, rotate_view=False, show_grain=False):
     selected_sheet = layout["sheets"][selected_sheet_idx]
     indexed_name_map = build_indexed_part_labels(layout, selected_sheet_idx)
+    sheet_w, sheet_h = get_sheet_dimensions(layout, selected_sheet)
 
-    ratio = max(0.25, float(layout["sheet_w"]) / max(float(layout["sheet_h"]), 1.0))
+    ratio = max(0.25, sheet_w / max(sheet_h, 1.0))
     fig_w = 6.0
     fig_h = max(3.0, min(5.0, fig_w / ratio))
     fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=150)
-    view_sheet_w = layout["sheet_h"] if rotate_view else layout["sheet_w"]
-    view_sheet_h = layout["sheet_w"] if rotate_view else layout["sheet_h"]
+    view_sheet_w = sheet_h if rotate_view else sheet_w
+    view_sheet_h = sheet_w if rotate_view else sheet_h
 
     ax.set_xlim(0, view_sheet_w)
     ax.set_ylim(0, view_sheet_h)
@@ -391,7 +475,7 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
 
     for part in selected_sheet["parts"]:
         if rotate_view:
-            part_x = layout["sheet_h"] - (part["y"] + part["h"])
+            part_x = sheet_h - (part["y"] + part["h"])
             part_y = part["x"]
             part_w = part["h"]
             part_h = part["w"]
@@ -425,7 +509,7 @@ def draw_layout_sheet(layout, selected_sheet_idx, tooling_map=None, template_pre
     boring_points = build_sheet_boring_points(selected_sheet.get("parts", []), tooling_map, template_preview)
     if rotate_view:
         boring_points = [
-            {**point, "x": layout["sheet_h"] - point["y"], "y": point["x"]}
+            {**point, "x": sheet_h - point["y"], "y": point["x"]}
             for point in boring_points
         ]
     if boring_points:
@@ -835,6 +919,123 @@ def manual_tuning_dialog():
         st.rerun()
 
 
+@st.dialog("Select offcuts to nest onto", width="large")
+def offcut_selection_dialog():
+    st.caption("Choose one or more in-stock offcuts from your library. The nest will use each selected offcut as an available sheet.")
+
+    try:
+        inventory_df, shapes_df = load_offcut_stock_sheet_data(OFFCUT_STOCK_SHEET_URL)
+    except Exception as exc:
+        st.error(f"Could not load offcut stock sheet: {exc}")
+        if st.button("Close", key="close_offcut_dialog_error"):
+            st.session_state.offcut_selector_open = False
+            st.rerun()
+        return
+
+    if inventory_df is None or inventory_df.empty:
+        st.info("No offcut stock records are available yet.")
+        if st.button("Close", key="close_offcut_dialog_empty"):
+            st.session_state.offcut_selector_open = False
+            st.rerun()
+        return
+
+    available_df = inventory_df.copy()
+    if "status" in available_df.columns:
+        available_df = available_df[available_df["status"].fillna("").astype(str).str.upper().isin(["", "IN_STOCK"])]
+    available_df = available_df.reset_index(drop=True)
+
+    if available_df.empty:
+        st.info("No in-stock offcuts are available to select.")
+        if st.button("Close", key="close_offcut_dialog_no_stock"):
+            st.session_state.offcut_selector_open = False
+            st.rerun()
+        return
+
+    current_ids = [str(v) for v in st.session_state.get("offcut_selected_ids", [])]
+    label_map = {}
+    options = []
+    default_labels = []
+
+    for row in available_df.to_dict("records"):
+        offcut_id = str(row.get("offcut_id", "")).strip()
+        label = (
+            f"{offcut_id} · {row.get('material', 'Unknown')} · "
+            f"{row.get('bbox_w_mm', '')} x {row.get('bbox_h_mm', '')} mm · "
+            f"{row.get('shape_type', 'RECT')}"
+        )
+        label_map[label] = row
+        options.append(label)
+        if offcut_id in current_ids:
+            default_labels.append(label)
+
+    selected_labels = st.multiselect(
+        "Available offcuts",
+        options,
+        default=default_labels,
+        key="offcut_dialog_multiselect",
+    )
+    selected_rows = [label_map[label] for label in selected_labels]
+
+    display_cols = [
+        c for c in [
+            "offcut_id", "material", "thickness_mm", "shape_type", "bbox_w_mm", "bbox_h_mm",
+            "area_mm2", "location", "sheet_origin_job", "captured_at_utc"
+        ] if c in available_df.columns
+    ]
+    st.dataframe(available_df[display_cols] if display_cols else available_df, hide_index=True, width="stretch")
+
+    if selected_rows:
+        selected_df = pd.DataFrame(selected_rows)
+        st.caption(f"Selected offcuts: {len(selected_rows)}")
+        st.dataframe(selected_df[display_cols] if display_cols else selected_df, hide_index=True, width="stretch")
+
+        preview_offcut_id = st.selectbox(
+            "Preview selected offcut",
+            [str(row.get("offcut_id", "")) for row in selected_rows],
+            key="offcut_dialog_preview_id",
+        )
+        shape_row = pd.DataFrame()
+        if isinstance(shapes_df, pd.DataFrame) and not shapes_df.empty and "offcut_id" in shapes_df.columns:
+            shape_row = shapes_df[shapes_df["offcut_id"].astype(str) == preview_offcut_id].head(1)
+
+        if not shape_row.empty:
+            points = parse_vertices_json(shape_row.iloc[0].get("vertices_json"))
+            if points:
+                min_px = min(p[0] for p in points)
+                min_py = min(p[1] for p in points)
+                local_points = [[float(p[0]) - float(min_px), float(p[1]) - float(min_py)] for p in points]
+
+                xs = [p[0] for p in local_points]
+                ys = [p[1] for p in local_points]
+                fig, ax = plt.subplots(figsize=(5.5, 3.5), dpi=140)
+                poly_x = xs + [xs[0]]
+                poly_y = ys + [ys[0]]
+                ax.fill(poly_x, poly_y, alpha=0.3, color="#2E86AB")
+                ax.plot(poly_x, poly_y, color="#1B4F72", linewidth=2)
+                ax.set_aspect('equal', adjustable='box')
+                ax.set_title(f"Offcut {preview_offcut_id}")
+                ax.set_xticks([])
+                ax.set_yticks([])
+                for spine in ax.spines.values():
+                    spine.set_visible(False)
+                st.pyplot(fig)
+
+    action_col1, action_col2 = st.columns(2)
+    if action_col1.button("Use selected offcuts", type="primary", key="apply_offcut_selection"):
+        if not selected_rows:
+            st.warning("Select at least one offcut to continue.")
+        else:
+            st.session_state.offcut_selected_ids = [str(row.get("offcut_id", "")) for row in selected_rows]
+            st.session_state.offcut_selected_items = selected_rows
+            st.session_state.sheet_w = max(float(row.get("bbox_w_mm", 0.0) or 0.0) for row in selected_rows)
+            st.session_state.sheet_h = max(float(row.get("bbox_h_mm", 0.0) or 0.0) for row in selected_rows)
+            st.session_state.offcut_selector_open = False
+            st.rerun()
+    if action_col2.button("Close", key="close_offcut_dialog"):
+        st.session_state.offcut_selector_open = False
+        st.rerun()
+
+
 apply_pending_loaded_nest()
 
 # --- MAIN PAGE ---
@@ -842,19 +1043,31 @@ st.title("🪚 CNC Nester Pro (Robust)")
 
 st.sidebar.header("⚙️ Machine Settings")
 MACHINE_TYPE = st.sidebar.selectbox("Machine Type", ["Flat Bed", "Selco"], key="machine_type")
-st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF (2800 x 2070)", "Ply (3050 x 1220)"], index=0, key="sheet_preset")
+st.sidebar.selectbox("Select Sheet Size", ["Custom", "MDF", "Ply", "Offcut"], index=0, key="sheet_preset", on_change=set_sheet_preset_state)
 sync_sheet_dims_from_preset()
 SHEET_W = st.sidebar.number_input("Sheet Width", key="sheet_w", step=10.0)
 SHEET_H = st.sidebar.number_input("Sheet Height", key="sheet_h", step=10.0)
 KERF = st.sidebar.number_input("Kerf", key="kerf")
 MARGIN = st.sidebar.number_input("Margin", key="margin")
 
-input_tab, result_tab, heat_tab, stock_tab, camera_tab = st.tabs([
+if st.session_state.get("sheet_preset") == "Offcut":
+    selected_items = st.session_state.get("offcut_selected_items", [])
+    st.sidebar.caption(f"Selected offcuts: {len(selected_items)}")
+    if selected_items:
+        st.sidebar.caption(", ".join(str(item.get("offcut_id", "")) for item in selected_items[:3]))
+        if len(selected_items) > 3:
+            st.sidebar.caption(f"+ {len(selected_items) - 3} more")
+    if st.sidebar.button("Select Offcuts", key="open_offcut_selector_sidebar", use_container_width=True):
+        st.session_state.offcut_selector_open = True
+
+if st.session_state.get("offcut_selector_open"):
+    offcut_selection_dialog()
+
+input_tab, result_tab, heat_tab, stock_tab = st.tabs([
     "1️⃣ Input",
     "2️⃣ Nested Results",
     "3️⃣ Heat Map & Offcuts",
     "4️⃣ Offcut Stock",
-    "5️⃣ Camera Calibration",
 ])
 
 with input_tab:
@@ -1020,27 +1233,54 @@ with input_tab:
         if not st.session_state['panels']:
             st.warning("Empty.")
         else:
-            if MACHINE_TYPE == "Selco":
+            offcut_mode = st.session_state.get("sheet_preset") == "Offcut"
+
+            if offcut_mode and not st.session_state.get("offcut_selected_items"):
+                st.warning("Select one or more offcuts before running nesting in Offcut mode.")
+                packer = None
+            elif offcut_mode:
+                packer = run_offcut_nesting(
+                    st.session_state['panels'],
+                    st.session_state.get("offcut_selected_items", []),
+                    MARGIN,
+                    KERF,
+                    machine_type=MACHINE_TYPE,
+                )
+            elif MACHINE_TYPE == "Selco":
                 packer = run_selco_nesting(st.session_state['panels'], SHEET_W, SHEET_H, MARGIN, KERF)
             else:
                 packer = run_smart_nesting(st.session_state['panels'], SHEET_W, SHEET_H, MARGIN, KERF)
-            st.session_state.last_packer = packer
 
             total_input = sum(p['Qty'] for p in st.session_state['panels'])
             total_packed = len(packer.rect_list()) if packer else 0
 
-            if total_packed < total_input:
-                missing = total_input - total_packed
-                st.error(f"⚠️ CRITICAL WARNING: {missing} panels could not fit on the sheets! Check your Sheet Size or Panel Dimensions.")
+            if not packer:
+                st.error("No valid nesting result was generated. Check your selected sheets or offcuts.")
             else:
-                st.success(f"Success! All {total_packed} panels nested on {len(packer)} Sheets.")
+                if total_packed < total_input:
+                    missing = total_input - total_packed
+                    st.error(f"⚠️ CRITICAL WARNING: {missing} panels could not fit on the sheets! Check your Sheet Size or Panel Dimensions.")
+                else:
+                    st.success(f"Success! All {total_packed} panels nested on {len(packer)} Sheets.")
 
-            st.session_state.manual_layout = initialize_layout_from_packer(packer, MARGIN, KERF, SHEET_W, SHEET_H)
-            st.session_state.manual_layout_draft = None
+                if offcut_mode:
+                    st.session_state.last_packer = None
+                    st.session_state.manual_layout = build_offcut_layout_from_packer(
+                        packer,
+                        MARGIN,
+                        KERF,
+                        st.session_state.get("offcut_selected_items", []),
+                    )
+                    st.session_state.cix_preview = None
+                else:
+                    st.session_state.last_packer = packer
+                    st.session_state.manual_layout = initialize_layout_from_packer(packer, MARGIN, KERF, SHEET_W, SHEET_H)
+                st.session_state.manual_layout_draft = None
 
 with result_tab:
     st.subheader("Nested Results")
     st.toggle("Show grain?", key="show_grain_overlay")
+    variable_sheets = layout_uses_variable_sheets(st.session_state.manual_layout)
     if st.session_state.cix_preview:
         st.markdown("### CIX Machining Preview")
         draw_cix_preview(st.session_state.cix_preview)
@@ -1049,30 +1289,37 @@ with result_tab:
     with export_col0:
         nest_name = st.text_input("Nest Name", value="My Nest", key="nest_name_results")
     with export_col1:
-        save_payload = build_nest_payload(
-            nest_name,
-            st.session_state.sheet_w,
-            st.session_state.sheet_h,
-            st.session_state.margin,
-            st.session_state.kerf,
-            st.session_state['panels'],
-            st.session_state.manual_layout,
-            st.session_state.machine_type,
-        )
-        st.download_button(
-            "💾 Save Nest",
-            data=payload_to_dxf(save_payload),
-            file_name=f"{nest_name.strip().replace(' ', '_') or 'nest'}.dxf",
-            mime="application/dxf",
-            type="secondary",
-            use_container_width=True,
-        )
+        if variable_sheets:
+            st.caption("Save Nest export is disabled for Offcut mode because selected offcuts can have different sizes.")
+        else:
+            save_payload = build_nest_payload(
+                nest_name,
+                st.session_state.sheet_w,
+                st.session_state.sheet_h,
+                st.session_state.margin,
+                st.session_state.kerf,
+                st.session_state['panels'],
+                st.session_state.manual_layout,
+                st.session_state.machine_type,
+            )
+            st.download_button(
+                "💾 Save Nest",
+                data=payload_to_dxf(save_payload),
+                file_name=f"{nest_name.strip().replace(' ', '_') or 'nest'}.dxf",
+                mime="application/dxf",
+                type="secondary",
+                use_container_width=True,
+            )
     with export_col2:
-        if st.session_state.last_packer:
+        if variable_sheets:
+            st.caption("DXF zip export is disabled for Offcut mode.")
+        elif st.session_state.last_packer:
             dxf = create_dxf_zip(st.session_state.last_packer, st.session_state.sheet_w, st.session_state.sheet_h, st.session_state.margin, st.session_state.kerf)
             st.download_button("💾 DXF", dxf, "nest.zip", "application/zip", type="secondary", use_container_width=True)
     with export_col3:
-        if st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
+        if variable_sheets:
+            st.caption("CIX export is disabled for Offcut mode.")
+        elif st.session_state.manual_layout and st.session_state.manual_layout.get("sheets"):
             cix_zip = create_cix_zip(st.session_state.manual_layout, st.session_state.cix_preview)
             st.download_button("💾 CIX Programs", cix_zip, "nest_cix.zip", "application/zip", type="secondary", use_container_width=True)
 
@@ -1086,11 +1333,19 @@ with result_tab:
         if not preview_sheets:
             st.warning("No previewable sheets were generated.")
         else:
-            sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in preview_sheets]
+            sheet_choices = []
+            for _, sheet in preview_sheets:
+                label = f"Sheet {sheet['sheet_index'] + 1}"
+                if sheet.get("offcut_id"):
+                    label += f" · {sheet['offcut_id']}"
+                sheet_choices.append(label)
             preview_sheet_label = st.selectbox("Preview Sheet", sheet_choices, key="preview_sheet_select_results")
             rotate_preview = st.toggle("Rotate preview 90°", value=False, key="preview_rotate_90")
             preview_sheet_idx = sheet_choices.index(preview_sheet_label)
             actual_sheet_idx = preview_sheets[preview_sheet_idx][0]
+            current_sheet = preview_sheets[preview_sheet_idx][1]
+            sheet_w, sheet_h = get_sheet_dimensions(st.session_state.manual_layout, current_sheet)
+            st.caption(f"Sheet size: {sheet_w:.0f} x {sheet_h:.0f} mm")
             draw_layout_sheet(
                 st.session_state.manual_layout,
                 actual_sheet_idx,
@@ -1099,7 +1354,7 @@ with result_tab:
                 show_grain=st.session_state.get("show_grain_overlay", False),
             )
 
-        if st.session_state.machine_type == "Flat Bed":
+        if st.session_state.machine_type == "Flat Bed" and not variable_sheets:
             action_col1, action_col2 = st.columns([1, 2])
             with action_col1:
                 if st.button("Manual Nesting Tuning"):
@@ -1115,6 +1370,8 @@ with result_tab:
                     st.rerun()
             with action_col2:
                 st.caption("Manual tuning opens in a popup. Click 'Apply to Nest' to commit your changes.")
+        elif variable_sheets:
+            st.caption("Manual tuning is disabled for Offcut mode because selected offcuts can have different sizes.")
         else:
             st.caption("Selco mode: sheet preview only (manual tuning is disabled).")
     else:
@@ -1131,11 +1388,18 @@ with heat_tab:
         if not preview_sheets:
             st.warning("No previewable sheets were generated.")
         else:
-            sheet_choices = [f"Sheet {sheet['sheet_index'] + 1}" for _, sheet in preview_sheets]
+            sheet_choices = []
+            for _, sheet in preview_sheets:
+                label = f"Sheet {sheet['sheet_index'] + 1}"
+                if sheet.get("offcut_id"):
+                    label += f" · {sheet['offcut_id']}"
+                sheet_choices.append(label)
             heat_sheet_label = st.selectbox("Sheet for Analysis", sheet_choices, key="preview_sheet_select_heat")
             heat_sheet_idx = sheet_choices.index(heat_sheet_label)
             actual_sheet_idx = preview_sheets[heat_sheet_idx][0]
             selected_sheet = st.session_state.manual_layout["sheets"][actual_sheet_idx]
+            sheet_w, sheet_h = get_sheet_dimensions(st.session_state.manual_layout, selected_sheet)
+            st.caption(f"Analysing sheet size: {sheet_w:.0f} x {sheet_h:.0f} mm")
 
             min_offcut_w = st.number_input("Min offcut width (mm)", min_value=0.0, value=120.0, step=10.0, key="min_offcut_w")
             min_offcut_h = st.number_input("Min offcut height (mm)", min_value=0.0, value=120.0, step=10.0, key="min_offcut_h")
@@ -1258,14 +1522,14 @@ with heat_tab:
             free_regions = preview["free_regions"]
 
             fig, ax = plt.subplots(figsize=(7, 4.5), dpi=140)
-            ax.set_xlim(0, st.session_state.manual_layout["sheet_w"])
-            ax.set_ylim(0, st.session_state.manual_layout["sheet_h"])
+            ax.set_xlim(0, sheet_w)
+            ax.set_ylim(0, sheet_h)
             ax.set_aspect('equal', adjustable='box')
             ax.set_title("Sheet offcut map")
             ax.set_xlabel("X (mm)")
             ax.set_ylabel("Y (mm)")
 
-            ax.add_patch(patches.Rectangle((0, 0), st.session_state.manual_layout["sheet_w"], st.session_state.manual_layout["sheet_h"], fc='#f4f6f8', ec='#2d3748', lw=1.2))
+            ax.add_patch(patches.Rectangle((0, 0), sheet_w, sheet_h, fc='#f4f6f8', ec='#2d3748', lw=1.2))
             ax.add_patch(patches.Rectangle((usable["x"], usable["y"]), usable["width"], usable["height"], fc='#eef7ee', ec='#2f855a', lw=1.1, ls='--'))
 
             for part in parts_regions:
@@ -1381,142 +1645,6 @@ with stock_tab:
                             spine.set_visible(False)
                         st.pyplot(fig)
                         st.caption("Edge labels show side length in mm. Offcut is normalized to local origin for preview.")
-
-
-with camera_tab:
-    st.subheader("Camera Calibration")
-    st.caption("Use either a JPEG upload or a direct Intel RealSense capture. The app expects four dark dots near the bottom-left of the board in a 100 mm x 100 mm square.")
-    calibration_source = st.radio("Calibration source", ["RealSense Live", "JPEG Upload"], horizontal=True, key="camera_calibration_source")
-    dot_spacing_mm = st.number_input("Calibration dot spacing (mm)", min_value=10.0, value=100.0, step=5.0, key="camera_dot_spacing_mm")
-    background_threshold = st.slider("Board/background contrast threshold", min_value=5, max_value=120, value=30, step=1, key="camera_background_threshold")
-    image_rgb = None
-    live_metrics = {}
-
-    if calibration_source == "RealSense Live":
-        available, status_message = realsense_status()
-        st.caption(status_message)
-        live_col1, live_col2, live_col3 = st.columns(3)
-        stream_width = live_col1.selectbox("Capture width", [640, 848, 1280], index=0, key="camera_live_width")
-        stream_height = live_col2.selectbox("Capture height", [480, 720], index=0, key="camera_live_height")
-        stream_fps = live_col3.selectbox("FPS", [15, 30], index=1, key="camera_live_fps")
-        live_preview_enabled = st.toggle("Show live preview", value=False, key="camera_live_preview_enabled")
-
-        if available and live_preview_enabled:
-            try:
-                st.session_state["camera_live_preview"] = capture_realsense_frame(
-                    width=int(stream_width),
-                    height=int(stream_height),
-                    fps=int(stream_fps),
-                    warmup_frames=3,
-                )
-            except Exception as exc:
-                st.error(f"Could not refresh the RealSense live preview: {exc}")
-
-        if available and st.button("Capture RealSense frame", key="camera_capture_live"):
-            try:
-                st.session_state["camera_live_capture"] = capture_realsense_frame(
-                    width=int(stream_width),
-                    height=int(stream_height),
-                    fps=int(stream_fps),
-                )
-            except Exception as exc:
-                st.error(f"Could not capture a RealSense frame: {exc}")
-
-        preview_frame = st.session_state.get("camera_live_preview")
-        if preview_frame:
-            preview_col1, preview_col2 = st.columns(2)
-            with preview_col1:
-                st.image(preview_frame.get("color_rgb"), caption="Live RealSense RGB preview", width="stretch")
-            with preview_col2:
-                fig_depth, ax_depth = plt.subplots(figsize=(6, 4), dpi=140)
-                ax_depth.imshow(preview_frame.get("depth_mm"), cmap="viridis")
-                ax_depth.set_title("Live depth preview (mm)")
-                ax_depth.set_xticks([])
-                ax_depth.set_yticks([])
-                st.pyplot(fig_depth)
-
-            if st.button("Use current live frame for calibration", key="camera_use_live_preview"):
-                st.session_state["camera_live_capture"] = preview_frame
-                st.success("Current live frame copied into calibration snapshot.")
-
-        capture = st.session_state.get("camera_live_capture")
-        if capture:
-            image_rgb = capture.get("color_rgb")
-            try:
-                plane_depth_mm = estimate_plane_depth_mm(capture["depth_mm"])
-                visible_area = estimate_visible_area_mm(capture["intrinsics"], plane_depth_mm)
-                live_metrics = {
-                    "plane_depth_mm": round(plane_depth_mm, 2),
-                    **visible_area,
-                }
-            except Exception as exc:
-                st.warning(f"Could not estimate visible area from depth: {exc}")
-
-            st.image(image_rgb, caption="Calibration snapshot RGB frame", width="stretch")
-        elif available:
-            st.info("Enable live preview or capture a RealSense frame to use live RGB + depth data inside the app.")
-
-        if available and live_preview_enabled:
-            time.sleep(0.35)
-            st.rerun()
-    else:
-        calibration_image = st.file_uploader("Upload calibration JPEG", type=["jpg", "jpeg"], key="camera_calibration_upload")
-        if calibration_image is None:
-            st.info("Upload an empty-board JPEG to calculate board dimensions and verify the dot square calibration.")
-        else:
-            image_rgb = load_image_array(calibration_image.getvalue())
-
-    if image_rgb is not None:
-        try:
-            calibration = calibrate_board(
-                image_rgb,
-                dot_spacing_mm=dot_spacing_mm,
-                background_threshold=float(background_threshold),
-            )
-
-            metric_col1, metric_col2, metric_col3, metric_col4 = st.columns(4)
-            metric_col1.metric("Board width (mm)", f"{calibration['board_width_mm']}")
-            metric_col2.metric("Board height (mm)", f"{calibration['board_height_mm']}")
-            metric_col3.metric("mm / px X", f"{calibration['mm_per_px_x']}")
-            metric_col4.metric("mm / px Y", f"{calibration['mm_per_px_y']}")
-            fov_col1, fov_col2 = st.columns(2)
-            fov_col1.metric("Visible area width (mm)", f"{live_metrics.get('visible_width_mm', calibration['fov_width_mm'])}")
-            fov_col2.metric("Visible area height (mm)", f"{live_metrics.get('visible_height_mm', calibration['fov_height_mm'])}")
-            if live_metrics:
-                depth_col, _ = st.columns(2)
-                depth_col.metric("Plane depth (mm)", f"{live_metrics['plane_depth_mm']}")
-
-            fig, ax = plt.subplots(figsize=(8, 5), dpi=140)
-            ax.imshow(image_rgb)
-            board_corners = calibration["board_corners_px"]
-            board_x = [p[0] for p in board_corners] + [board_corners[0][0]]
-            board_y = [p[1] for p in board_corners] + [board_corners[0][1]]
-            ax.plot(board_x, board_y, color="#00a651", linewidth=2.0, label="Detected board")
-
-            dot_points = calibration["dots"]
-            ax.scatter([p[0] for p in dot_points], [p[1] for p in dot_points], color="#ff4b4b", s=40, label="Calibration dots")
-            for idx, point in enumerate(dot_points, start=1):
-                ax.text(point[0] + 8, point[1] - 8, f"D{idx}", color="#ff4b4b", fontsize=9, weight="bold")
-
-            ax.set_title("Camera calibration preview")
-            ax.set_xticks([])
-            ax.set_yticks([])
-            ax.legend(loc="upper right")
-            st.pyplot(fig)
-
-            st.caption("Use an empty board image or a live empty-board capture for calibration. Visible-area metrics come from either the RealSense depth/intrinsics or the RGB dot-square estimate.")
-            st.caption("If the dots are labeled incorrectly or the green board outline is wrong, retry with darker dots, stronger contrast around the board edge, or adjust the contrast threshold.")
-            st.dataframe(
-                pd.DataFrame({
-                    "Point": ["Top-left dot", "Top-right dot", "Bottom-left dot", "Bottom-right dot"],
-                    "Pixel X": [p[0] for p in dot_points],
-                    "Pixel Y": [p[1] for p in dot_points],
-                }),
-                hide_index=True,
-                width="stretch",
-            )
-        except Exception as exc:
-            st.error(f"Could not calibrate this image: {exc}")
 
 if st.session_state.show_manual_tuning and st.session_state.manual_layout_draft:
     manual_tuning_dialog()
